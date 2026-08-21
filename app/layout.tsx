@@ -2,8 +2,8 @@ import type { Metadata } from 'next'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: '現場見える化アシスト',
-  description: '建築・内装・太陽光施工会社向けの現場見える化システム',
+  title: 'コンテナ管理システム',
+  description: '産業廃棄物のコンテナ設置・引上げ・長期設置・収集履歴を一元管理',
 }
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
@@ -13,4 +13,3 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
     </html>
   )
 }
-

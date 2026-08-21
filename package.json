@@ -1,14 +1,14 @@
 {
-  "name": "genba-mieruka-assist",
+  "name": "container-management",
   "version": "1.0.0",
-  "description": "現場写真・日報・要対応を見える化する建築業向けMVP",
+  "description": "産業廃棄物収集運搬会社向けコンテナ管理デモ",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint ."
   },
-  "keywords": ["nextjs", "supabase", "construction", "mvp"],
+  "keywords": ["nextjs", "container", "waste-management", "mvp"],
   "author": "",
   "license": "ISC",
   "dependencies": {
