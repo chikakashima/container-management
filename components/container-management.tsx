@@ -79,7 +79,16 @@ function hasContent(row: ReportRow) {
 }
 
 function asset(assetId: string) {
-  return containerAssets.find((item) => item.id === assetId)
+  if (!assetId) return undefined
+  const digits = assetId.replace(/\D/g, '')
+  const known = containerAssets.find((item) => item.id === assetId || (digits && item.label.replace(/\D/g, '') === digits))
+  if (known) return known
+  return digits ? { id: `container-${digits}`, label: digits, assetType: 'コンテナ' as const, sizeLabel: '' } : undefined
+}
+
+function assetNumber(assetId: string) {
+  if (!assetId) return ''
+  return asset(assetId)?.label.replace(/\D/g, '') ?? assetId.replace(/\D/g, '')
 }
 
 function typeColor(type: ContainerWorkType) {
@@ -292,10 +301,7 @@ export function ContainerManagement() {
               <div><p className="text-sm font-bold text-rose-700">長期設置コンテナ</p><p className="mt-2 text-4xl font-black">{longTerm.filter((item) => item.elapsedDays >= threshold.days).length}件</p></div>
               <AlertTriangle className="h-8 w-8 text-rose-700" />
             </div>
-            <label className="mt-4 block text-sm font-bold text-slate-700">{threshold.label}
-              <input type="number" min="1" className="mt-2 w-full border border-slate-200 px-4 py-3" value={threshold.days}
-                onChange={(event) => persist({ ...stored, thresholds: stored.thresholds.map((item) => item.id === threshold.id ? { ...item, days: Number(event.target.value) } : item) })} />
-            </label>
+            <p className="mt-4 text-sm font-bold text-slate-700">{threshold.label}</p>
           </div>
         ))}
       </section>
@@ -327,8 +333,8 @@ export function ContainerManagement() {
                 <td className="border border-slate-300 px-3 py-4 text-center font-black">{index + 1}</td>
                 <td className="border border-slate-300 p-2"><input className="w-full min-w-40 border border-slate-200 px-3 py-3" placeholder="排出事業者名" value={row.companyName} onChange={(event) => updateRow(row.id, { companyName: event.target.value })} /></td>
                 <td className="border border-slate-300 p-2"><input className="w-full min-w-40 border border-slate-200 px-3 py-3" placeholder="現場名（同左も可）" value={row.siteName} onChange={(event) => updateRow(row.id, { siteName: event.target.value })} /></td>
-                <td className="border border-slate-300 p-2"><select className="w-full border border-slate-200 px-3 py-3" value={row.installAssetId} onChange={(event) => updateRow(row.id, { installAssetId: event.target.value })}><option value="">なし</option>{containerAssets.map((item) => <option key={item.id} value={item.id}>{item.label} / {item.sizeLabel}</option>)}</select></td>
-                <td className="border border-slate-300 p-2"><select className="w-full border border-slate-200 px-3 py-3" value={row.collectAssetId} onChange={(event) => updateRow(row.id, { collectAssetId: event.target.value })}><option value="">なし</option>{containerAssets.map((item) => <option key={item.id} value={item.id}>{item.label} / {item.sizeLabel}</option>)}</select></td>
+                <td className="border border-slate-300 p-2"><input inputMode="numeric" pattern="[0-9]*" className="w-full border border-slate-200 px-3 py-3" placeholder="例：408" value={assetNumber(row.installAssetId)} onChange={(event) => updateRow(row.id, { installAssetId: event.target.value.replace(/\D/g, '') })} /></td>
+                <td className="border border-slate-300 p-2"><input inputMode="numeric" pattern="[0-9]*" className="w-full border border-slate-200 px-3 py-3" placeholder="例：210" value={assetNumber(row.collectAssetId)} onChange={(event) => updateRow(row.id, { collectAssetId: event.target.value.replace(/\D/g, '') })} /></td>
                 <td className="border border-slate-300 p-2"><textarea className="min-h-12 w-full min-w-52 border border-slate-200 px-3 py-3" placeholder="例：金属くず 310kg（自動車部品）" value={row.quantityNote} onChange={(event) => updateRow(row.id, { quantityNote: event.target.value })} /></td>
                 <td className="border border-slate-300 px-2 py-4 text-center"><span className={`inline-flex px-3 py-1 text-xs font-black ${typeColor(type)}`}>{type}</span></td>
                 <td className="border border-slate-300 p-2"><button type="button" className="p-3 text-slate-400 hover:text-rose-700" onClick={() => setRows((current) => current.length === 1 ? [emptyRow()] : current.filter((item) => item.id !== row.id))} aria-label="行を削除"><Trash2 className="h-5 w-5" /></button></td>
