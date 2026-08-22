@@ -1,7 +1,7 @@
 'use client'
 
 import { useMemo, useState } from 'react'
-import { AlertTriangle, Download, FileText, PackageCheck, Plus, Printer, RotateCcw, Search, Trash2, Truck } from 'lucide-react'
+import { AlertTriangle, PackageCheck, Plus, Printer, RotateCcw, Search, Trash2, Truck } from 'lucide-react'
 import {
   containerAssets,
   initialAssignments,
@@ -21,6 +21,9 @@ type ReportRow = {
   collectAssetId: string
   quantityNote: string
 }
+
+type AppTab = 'daily' | 'container-ledger' | 'collection-history'
+type PrintTarget = 'container-ledger' | 'collection-history' | null
 
 const storageKey = 'genba-container-management-v2'
 
@@ -101,19 +104,8 @@ function loadData() {
   }
 }
 
-function downloadCsv(reports: ContainerReport[]) {
-  const header = ['作業日', '排出事業者名', '現場名', '運搬者', '作業区分', '設置番号', '引上げ番号', '受託数量・備考']
-  const rows = reports.map((report) => [
-    formatDate(report.workDate), report.companyName, report.siteName, report.driverName, report.workType,
-    report.installAssetLabel ?? '', report.collectAssetLabel ?? '', report.quantity,
-  ])
-  const csv = [header, ...rows].map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n')
-  const url = URL.createObjectURL(new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' }))
-  const link = document.createElement('a')
-  link.href = url
-  link.download = `コンテナ作業日報_${today()}.csv`
-  link.click()
-  URL.revokeObjectURL(url)
+function fiscalYears(reports: ContainerReport[]) {
+  return Array.from(new Set(reports.map((report) => report.workDate.slice(0, 4)))).sort((a, b) => b.localeCompare(a))
 }
 
 export function ContainerManagement() {
@@ -125,6 +117,11 @@ export function ContainerManagement() {
   const [message, setMessage] = useState('')
   const [companyQuery, setCompanyQuery] = useState('○○建設')
   const [containerQuery, setContainerQuery] = useState('')
+  const [activeTab, setActiveTab] = useState<AppTab>('daily')
+  const [ledgerAssetId, setLedgerAssetId] = useState(containerAssets.find((item) => item.assetType === 'コンテナ')?.id ?? '')
+  const [historyCompany, setHistoryCompany] = useState('○○建設')
+  const [historyYear, setHistoryYear] = useState('2026')
+  const [printTarget, setPrintTarget] = useState<PrintTarget>(null)
 
   const active = useMemo(() => stored.assignments.filter((item) => !item.collectedOn), [stored.assignments])
   const longTerm = useMemo(
@@ -136,6 +133,25 @@ export function ContainerManagement() {
     if (companyQuery.trim()) return active.filter((item) => normalize(item.companyName).includes(normalize(companyQuery)))
     return active
   }, [active, companyQuery, containerQuery])
+  const companies = useMemo(() => Array.from(new Set(stored.reports.map((report) => report.companyName))).sort((a, b) => a.localeCompare(b, 'ja')), [stored.reports])
+  const years = useMemo(() => fiscalYears(stored.reports), [stored.reports])
+  const selectedAsset = asset(ledgerAssetId)
+  const ledgerRows = useMemo(
+    () => stored.reports.filter((report) => report.installAssetId === ledgerAssetId || report.collectAssetId === ledgerAssetId).sort((a, b) => a.workDate.localeCompare(b.workDate)),
+    [ledgerAssetId, stored.reports],
+  )
+  const historyRows = useMemo(
+    () => stored.reports.filter((report) => report.companyName === historyCompany && report.workDate.startsWith(`${historyYear}-`)).sort((a, b) => a.workDate.localeCompare(b.workDate)),
+    [historyCompany, historyYear, stored.reports],
+  )
+
+  function printSheet(target: Exclude<PrintTarget, null>) {
+    setPrintTarget(target)
+    window.setTimeout(() => {
+      window.print()
+      setPrintTarget(null)
+    }, 80)
+  }
 
   function persist(next: { assignments: ContainerAssignment[]; reports: ContainerReport[]; thresholds: LongTermThreshold[] }) {
     setStored(next)
@@ -249,6 +265,19 @@ export function ContainerManagement() {
 
   return (
     <div className="space-y-6">
+      <nav className="no-print panel grid rounded-none p-2 sm:grid-cols-3" aria-label="管理メニュー">
+        {([
+          ['daily', '日報入力・設置状況'],
+          ['container-ledger', 'コンテナ管理表'],
+          ['collection-history', '収集履歴'],
+        ] as const).map(([tab, label]) => (
+          <button key={tab} type="button" onClick={() => setActiveTab(tab)} className={`px-4 py-4 text-sm font-black transition ${activeTab === tab ? 'bg-emerald-800 text-white' : 'bg-white text-slate-700 hover:bg-emerald-50'}`}>
+            {label}
+          </button>
+        ))}
+      </nav>
+
+      {activeTab === 'daily' ? <>
       <section className="grid gap-4 xl:grid-cols-3">
         {stored.thresholds.map((threshold) => (
           <div key={threshold.id} className="panel rounded-none p-5">
@@ -321,12 +350,55 @@ export function ContainerManagement() {
         <section className="panel rounded-none p-5"><h2 className="text-xl font-black">設置期間が長い順</h2><div className="mt-4 overflow-x-auto"><table className="w-full min-w-[620px] text-sm"><thead className="bg-slate-100"><tr>{['経過', '番号', '排出事業者名', '現場名', '設置日'].map((title) => <th key={title} className="border border-slate-200 px-3 py-3 text-left">{title}</th>)}</tr></thead><tbody>{longTerm.slice(0, 12).map((item) => <tr key={item.id}><td className="border border-slate-200 px-3 py-3 font-black text-rose-700">{item.elapsedDays}日</td><td className="border border-slate-200 px-3 py-3 font-bold">{item.assetLabel}</td><td className="border border-slate-200 px-3 py-3">{item.companyName}</td><td className="border border-slate-200 px-3 py-3">{item.siteName}</td><td className="border border-slate-200 px-3 py-3">{formatDate(item.installedOn)}</td></tr>)}</tbody></table></div></section>
       </section>
 
-      <section className="panel print-area rounded-none p-5">
-        <div className="flex flex-col justify-between gap-3 md:flex-row"><div><h2 className="text-xl font-black">帳票出力</h2><p className="mt-2 text-sm text-slate-600">収集履歴を印刷、またはCSVに出力します。</p></div><div className="flex gap-2"><button type="button" className="inline-flex items-center gap-2 border px-4 py-3 text-sm font-black" onClick={() => window.print()}><Printer className="h-5 w-5" />印刷/PDF</button><button type="button" className="inline-flex items-center gap-2 border px-4 py-3 text-sm font-black" onClick={() => downloadCsv(stored.reports)}><Download className="h-5 w-5" />Excel用CSV</button></div></div>
-        <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[980px] border-collapse text-sm"><caption className="py-3 text-2xl font-black">収集履歴</caption><thead><tr>{['収集年月日', '現場名（工事件名）及び住所', '運搬者', '設置', '引上げ', '受託数量・備考'].map((title) => <th key={title} className="border-2 border-slate-700 px-3 py-3">{title}</th>)}</tr></thead><tbody>{stored.reports.map((report) => <tr key={report.id}><td className="border-2 border-slate-700 px-3 py-3">{formatDate(report.workDate)}</td><td className="border-2 border-slate-700 px-3 py-3"><b>{report.companyName}</b><br />{report.siteName}</td><td className="border-2 border-slate-700 px-3 py-3">{report.driverName}</td><td className="border-2 border-slate-700 px-3 py-3">{report.installAssetLabel ?? ''}</td><td className="border-2 border-slate-700 px-3 py-3">{report.collectAssetLabel ?? ''}</td><td className="border-2 border-slate-700 px-3 py-3">{report.quantity}</td></tr>)}</tbody></table></div>
-      </section>
+      </> : null}
 
-      <section className="panel rounded-none p-5"><div className="flex items-center gap-3"><FileText className="h-6 w-6" /><h2 className="text-xl font-black">第一段階の範囲</h2></div><div className="mt-4 grid gap-3 text-sm font-bold md:grid-cols-4"><p className="bg-slate-50 p-4">日報の一括入力</p><p className="bg-slate-50 p-4">コンテナ管理</p><p className="bg-slate-50 p-4">長期設置アラート</p><p className="bg-slate-50 p-4">帳票出力</p></div></section>
+      {activeTab === 'container-ledger' ? <section className="space-y-5">
+        <div className="no-print panel rounded-none p-5">
+          <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+            <label className="block text-sm font-bold text-slate-700">コンテナ番号
+              <select className="mt-2 block min-w-72 border border-slate-300 bg-white px-4 py-3" value={ledgerAssetId} onChange={(event) => setLedgerAssetId(event.target.value)}>
+                {containerAssets.map((item) => <option key={item.id} value={item.id}>{item.label}（{item.sizeLabel}・{item.assetType}）</option>)}
+              </select>
+            </label>
+            <button type="button" className="inline-flex items-center justify-center gap-2 bg-emerald-800 px-5 py-3 font-black text-white" onClick={() => printSheet('container-ledger')}><Printer className="h-5 w-5" />A4 PDF・印刷</button>
+          </div>
+        </div>
+        <div className={`paper-sheet paper-portrait ${printTarget === 'container-ledger' ? 'print-target' : ''}`}>
+          <div className="paper-title-row"><p>No. <span>{selectedAsset?.label.replace('番', '')}</span></p><h2>コンテナ管理表</h2></div>
+          <table className="paper-table container-ledger-table">
+            <thead><tr><th>設置年月日</th><th>回収年月日</th><th>排出事業者名</th><th>現場名</th></tr></thead>
+            <tbody>{Array.from({ length: Math.max(24, ledgerRows.length) }, (_, index) => {
+              const report = ledgerRows[index]
+              return <tr key={report?.id ?? `empty-${index}`}><td>{report?.installAssetId === ledgerAssetId ? formatDate(report.workDate) : ''}</td><td>{report?.collectAssetId === ledgerAssetId ? formatDate(report.workDate) : ''}</td><td>{report?.companyName ?? ''}</td><td>{report?.siteName ?? ''}</td></tr>
+            })}</tbody>
+          </table>
+        </div>
+      </section> : null}
+
+      {activeTab === 'collection-history' ? <section className="space-y-5">
+        <div className="no-print panel rounded-none p-5">
+          <div className="grid gap-4 md:grid-cols-[1fr_180px_auto] md:items-end">
+            <label className="block text-sm font-bold text-slate-700">排出事業者名
+              <select className="mt-2 block w-full border border-slate-300 bg-white px-4 py-3" value={historyCompany} onChange={(event) => setHistoryCompany(event.target.value)}>{companies.map((company) => <option key={company}>{company}</option>)}</select>
+            </label>
+            <label className="block text-sm font-bold text-slate-700">管理年
+              <select className="mt-2 block w-full border border-slate-300 bg-white px-4 py-3" value={historyYear} onChange={(event) => setHistoryYear(event.target.value)}>{years.map((year) => <option key={year}>{year}年</option>)}</select>
+            </label>
+            <button type="button" className="inline-flex items-center justify-center gap-2 bg-emerald-800 px-5 py-3 font-black text-white" onClick={() => printSheet('collection-history')}><Printer className="h-5 w-5" />A4 PDF・印刷</button>
+          </div>
+          <p className="mt-3 text-sm text-slate-600">排出事業者名と年を選ぶと、1年分の収集履歴を紙と同じ形式で保存できます。</p>
+        </div>
+        <div className={`paper-sheet paper-landscape ${printTarget === 'collection-history' ? 'print-target' : ''}`}>
+          <div className="collection-heading"><div><span>排出事業者名</span><strong>{historyCompany}</strong></div><h2>収集履歴</h2><p>{historyYear}年</p></div>
+          <table className="paper-table collection-table">
+            <thead><tr><th>収集年月日</th><th>現場名（工事件名）及び住所</th><th>運搬者</th><th colSpan={2}>コンテナ番号</th><th>品目・数量及び処分先・備考</th></tr><tr><th></th><th></th><th></th><th>設置</th><th>回収</th><th></th></tr></thead>
+            <tbody>{Array.from({ length: Math.max(18, historyRows.length) }, (_, index) => {
+              const report = historyRows[index]
+              return <tr key={report?.id ?? `empty-${index}`}><td>{report ? formatDate(report.workDate) : ''}</td><td>{report?.siteName ?? ''}</td><td>{report?.driverName ?? ''}</td><td>{report?.installAssetLabel?.replace('番', '') ?? ''}</td><td>{report?.collectAssetLabel?.replace('番', '') ?? ''}</td><td>{report?.quantity ?? ''}{report?.note && report.note !== report.quantity ? ` ${report.note}` : ''}</td></tr>
+            })}</tbody>
+          </table>
+        </div>
+      </section> : null}
     </div>
   )
 }
