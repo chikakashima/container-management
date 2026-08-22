@@ -294,7 +294,7 @@ export function ContainerManagement() {
       </nav>
 
       {activeTab === 'daily' ? <>
-      <section className="grid gap-4 xl:grid-cols-3">
+      <section className="grid gap-4 md:grid-cols-3">
         {stored.thresholds.map((threshold) => (
           <div key={threshold.id} className="panel rounded-none p-5">
             <div className="flex items-start justify-between">
