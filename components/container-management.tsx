@@ -119,6 +119,7 @@ export function ContainerManagement() {
   const [containerQuery, setContainerQuery] = useState('')
   const [activeTab, setActiveTab] = useState<AppTab>('daily')
   const [ledgerAssetId, setLedgerAssetId] = useState(containerAssets.find((item) => item.assetType === 'コンテナ')?.id ?? '')
+  const [ledgerAssetQuery, setLedgerAssetQuery] = useState(containerAssets.find((item) => item.assetType === 'コンテナ')?.label ?? '')
   const [historyCompany, setHistoryCompany] = useState('○○建設')
   const [historyYear, setHistoryYear] = useState('2026')
   const [printTarget, setPrintTarget] = useState<PrintTarget>(null)
@@ -151,6 +152,12 @@ export function ContainerManagement() {
       window.print()
       setPrintTarget(null)
     }, 80)
+  }
+
+  function selectLedgerAsset(value: string) {
+    setLedgerAssetQuery(value)
+    const exact = containerAssets.find((item) => item.label === value || `${item.label}（${item.sizeLabel}・${item.assetType}）` === value)
+    if (exact) setLedgerAssetId(exact.id)
   }
 
   function persist(next: { assignments: ContainerAssignment[]; reports: ContainerReport[]; thresholds: LongTermThreshold[] }) {
@@ -356,9 +363,8 @@ export function ContainerManagement() {
         <div className="no-print panel rounded-none p-5">
           <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
             <label className="block text-sm font-bold text-slate-700">コンテナ番号
-              <select className="mt-2 block min-w-72 border border-slate-300 bg-white px-4 py-3" value={ledgerAssetId} onChange={(event) => setLedgerAssetId(event.target.value)}>
-                {containerAssets.map((item) => <option key={item.id} value={item.id}>{item.label}（{item.sizeLabel}・{item.assetType}）</option>)}
-              </select>
+              <input className="mt-2 block min-w-72 border border-slate-300 bg-white px-4 py-3" list="container-ledger-options" placeholder="番号を入力して検索" value={ledgerAssetQuery} onChange={(event) => selectLedgerAsset(event.target.value)} />
+              <datalist id="container-ledger-options">{containerAssets.map((item) => <option key={item.id} value={item.label}>{item.sizeLabel}・{item.assetType}</option>)}</datalist>
             </label>
             <button type="button" className="inline-flex items-center justify-center gap-2 bg-emerald-800 px-5 py-3 font-black text-white" onClick={() => printSheet('container-ledger')}><Printer className="h-5 w-5" />A4 PDF・印刷</button>
           </div>
@@ -379,7 +385,8 @@ export function ContainerManagement() {
         <div className="no-print panel rounded-none p-5">
           <div className="grid gap-4 md:grid-cols-[1fr_180px_auto] md:items-end">
             <label className="block text-sm font-bold text-slate-700">排出事業者名
-              <select className="mt-2 block w-full border border-slate-300 bg-white px-4 py-3" value={historyCompany} onChange={(event) => setHistoryCompany(event.target.value)}>{companies.map((company) => <option key={company}>{company}</option>)}</select>
+              <input className="mt-2 block w-full border border-slate-300 bg-white px-4 py-3" list="history-company-options" placeholder="事業者名を入力して検索" value={historyCompany} onChange={(event) => setHistoryCompany(event.target.value)} />
+              <datalist id="history-company-options">{companies.map((company) => <option key={company} value={company} />)}</datalist>
             </label>
             <label className="block text-sm font-bold text-slate-700">管理年
               <select className="mt-2 block w-full border border-slate-300 bg-white px-4 py-3" value={historyYear} onChange={(event) => setHistoryYear(event.target.value)}>{years.map((year) => <option key={year}>{year}年</option>)}</select>
