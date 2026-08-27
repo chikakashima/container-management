@@ -1,11 +1,10 @@
 'use client'
 
-import { useMemo, useState } from 'react'
-import { AlertTriangle, PackageCheck, Plus, Printer, RotateCcw, Search, Trash2, Truck } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { AlertTriangle, LogOut, PackageCheck, Plus, Printer, RotateCcw, Search, Trash2, Truck } from 'lucide-react'
+import type { Session } from '@supabase/supabase-js'
+import { supabase } from '@/lib/supabase'
 import {
-  containerAssets,
-  initialAssignments,
-  initialReports,
   longTermThresholds,
   type ContainerAssignment,
   type ContainerReport,
@@ -24,8 +23,6 @@ type ReportRow = {
 
 type AppTab = 'daily' | 'container-ledger' | 'collection-history'
 type PrintTarget = 'container-ledger' | 'collection-history' | null
-
-const storageKey = 'genba-container-management-v2'
 
 function today() {
   const date = new Date()
@@ -53,18 +50,7 @@ function emptyRow(id = `row-${Date.now()}-${Math.random()}`): ReportRow {
 }
 
 function defaultRows(): ReportRow[] {
-  return [
-    {
-      ...emptyRow('sample'),
-      companyName: '○○建設',
-      siteName: '同左',
-      installAssetId: 'container-oki-1',
-      collectAssetId: 'container-408',
-      quantityNote: '2.5m3コンテナ 1基',
-    },
-    emptyRow('row-2'),
-    emptyRow('row-3'),
-  ]
+  return [emptyRow('row-1'), emptyRow('row-2'), emptyRow('row-3')]
 }
 
 function workType(row: ReportRow): ContainerWorkType {
@@ -81,8 +67,6 @@ function hasContent(row: ReportRow) {
 function asset(assetId: string) {
   if (!assetId) return undefined
   const digits = assetId.replace(/\D/g, '')
-  const known = containerAssets.find((item) => item.id === assetId || (digits && item.label.replace(/\D/g, '') === digits))
-  if (known) return known
   return digits ? { id: `container-${digits}`, label: digits, assetType: 'コンテナ' as const, sizeLabel: '' } : undefined
 }
 
@@ -98,40 +82,80 @@ function typeColor(type: ContainerWorkType) {
   return 'bg-amber-100 text-amber-800'
 }
 
-function loadData() {
-  const fallback = { assignments: initialAssignments, reports: initialReports, thresholds: longTermThresholds }
-  if (typeof window === 'undefined') return fallback
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(storageKey) ?? '') as typeof fallback
-    return {
-      assignments: parsed.assignments?.length ? parsed.assignments : initialAssignments,
-      reports: parsed.reports?.length ? parsed.reports : initialReports,
-      thresholds: parsed.thresholds?.length ? parsed.thresholds : longTermThresholds,
-    }
-  } catch {
-    return fallback
-  }
-}
-
 function fiscalYears(reports: ContainerReport[]) {
   return Array.from(new Set(reports.map((report) => report.workDate.slice(0, 4)))).sort((a, b) => b.localeCompare(a))
 }
 
 export function ContainerManagement() {
-  const [stored, setStored] = useState(loadData)
+  const [session, setSession] = useState<Session | null>(null)
+  const [authReady, setAuthReady] = useState(false)
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [authError, setAuthError] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [stored, setStored] = useState<{ assignments: ContainerAssignment[]; reports: ContainerReport[]; thresholds: LongTermThreshold[] }>({ assignments: [], reports: [], thresholds: longTermThresholds })
   const [workDate, setWorkDate] = useState(today())
   const [driverName, setDriverName] = useState('')
   const [rows, setRows] = useState<ReportRow[]>(defaultRows)
   const [errors, setErrors] = useState<string[]>([])
   const [message, setMessage] = useState('')
-  const [companyQuery, setCompanyQuery] = useState('○○建設')
+  const [companyQuery, setCompanyQuery] = useState('')
   const [containerQuery, setContainerQuery] = useState('')
   const [activeTab, setActiveTab] = useState<AppTab>('daily')
-  const [ledgerAssetId, setLedgerAssetId] = useState(containerAssets.find((item) => item.assetType === 'コンテナ')?.id ?? '')
-  const [ledgerAssetQuery, setLedgerAssetQuery] = useState(containerAssets.find((item) => item.assetType === 'コンテナ')?.label ?? '')
-  const [historyCompany, setHistoryCompany] = useState('○○建設')
-  const [historyYear, setHistoryYear] = useState('2026')
+  const [ledgerAssetId, setLedgerAssetId] = useState('')
+  const [ledgerAssetQuery, setLedgerAssetQuery] = useState('')
+  const [historyCompany, setHistoryCompany] = useState('')
+  const [historyYear, setHistoryYear] = useState(String(new Date().getFullYear()))
   const [printTarget, setPrintTarget] = useState<PrintTarget>(null)
+
+  useEffect(() => {
+    void supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session)
+      setAuthReady(true)
+    })
+    const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession)
+      setAuthReady(true)
+    })
+    return () => data.subscription.unsubscribe()
+  }, [])
+
+  useEffect(() => {
+    if (!session) {
+      setStored({ assignments: [], reports: [], thresholds: longTermThresholds })
+      return
+    }
+    void loadFromSupabase()
+  }, [session])
+
+  async function loadFromSupabase() {
+    setLoading(true)
+    setErrors([])
+    const [assignmentsResult, reportsResult] = await Promise.all([
+      supabase.from('container_assignments').select('*').order('installed_on', { ascending: false }),
+      supabase.from('container_reports').select('*').order('work_date', { ascending: false }),
+    ])
+    if (assignmentsResult.error || reportsResult.error) {
+      setErrors([assignmentsResult.error?.message ?? reportsResult.error?.message ?? 'データを読み込めませんでした。'])
+      setLoading(false)
+      return
+    }
+    const assignments: ContainerAssignment[] = (assignmentsResult.data ?? []).map((item) => ({
+      id: item.id, assetId: item.asset_id, assetLabel: item.asset_label, assetType: item.asset_type,
+      sizeLabel: item.size_label, companyName: item.company_name, siteName: item.site_name,
+      installedOn: item.installed_on, collectedOn: item.collected_on ?? undefined,
+      quantity: item.quantity, note: item.note ?? undefined,
+    }))
+    const reports: ContainerReport[] = (reportsResult.data ?? []).map((item) => ({
+      id: item.id, workDate: item.work_date, companyName: item.company_name, siteName: item.site_name,
+      driverName: item.driver_name, workType: item.work_type, installAssetId: item.install_asset_id ?? undefined,
+      installAssetLabel: item.install_asset_label ?? undefined, collectAssetId: item.collect_asset_id ?? undefined,
+      collectAssetLabel: item.collect_asset_label ?? undefined, assetType: item.asset_type,
+      sizeLabel: item.size_label, quantity: item.quantity, note: item.note ?? undefined,
+    }))
+    setStored({ assignments, reports, thresholds: longTermThresholds })
+    setLoading(false)
+  }
 
   const active = useMemo(() => stored.assignments.filter((item) => !item.collectedOn), [stored.assignments])
   const longTerm = useMemo(
@@ -145,6 +169,14 @@ export function ContainerManagement() {
   }, [active, companyQuery, containerQuery])
   const companies = useMemo(() => Array.from(new Set(stored.reports.map((report) => report.companyName))).sort((a, b) => a.localeCompare(b, 'ja')), [stored.reports])
   const years = useMemo(() => fiscalYears(stored.reports), [stored.reports])
+  const knownAssets = useMemo(() => {
+    const values = new Map<string, { id: string; label: string; assetType: 'コンテナ' | 'カゴ'; sizeLabel: string }>()
+    stored.reports.forEach((report) => {
+      if (report.installAssetId && report.installAssetLabel) values.set(report.installAssetId, { id: report.installAssetId, label: report.installAssetLabel, assetType: report.assetType === '手積み' ? 'コンテナ' : report.assetType, sizeLabel: report.sizeLabel })
+      if (report.collectAssetId && report.collectAssetLabel) values.set(report.collectAssetId, { id: report.collectAssetId, label: report.collectAssetLabel, assetType: report.assetType === '手積み' ? 'コンテナ' : report.assetType, sizeLabel: report.sizeLabel })
+    })
+    return Array.from(values.values()).sort((a, b) => a.label.localeCompare(b.label, 'ja', { numeric: true }))
+  }, [stored.reports])
   const selectedAsset = asset(ledgerAssetId)
   const ledgerRows = useMemo(
     () => stored.reports.filter((report) => report.installAssetId === ledgerAssetId || report.collectAssetId === ledgerAssetId).sort((a, b) => a.workDate.localeCompare(b.workDate)),
@@ -165,13 +197,9 @@ export function ContainerManagement() {
 
   function selectLedgerAsset(value: string) {
     setLedgerAssetQuery(value)
-    const exact = containerAssets.find((item) => item.label === value || `${item.label}（${item.sizeLabel}・${item.assetType}）` === value)
+    const exact = knownAssets.find((item) => item.label === value || `${item.label}（${item.sizeLabel}・${item.assetType}）` === value)
     if (exact) setLedgerAssetId(exact.id)
-  }
-
-  function persist(next: { assignments: ContainerAssignment[]; reports: ContainerReport[]; thresholds: LongTermThreshold[] }) {
-    setStored(next)
-    window.localStorage.setItem(storageKey, JSON.stringify(next))
+    else if (value.replace(/\D/g, '')) setLedgerAssetId(`container-${value.replace(/\D/g, '')}`)
   }
 
   function updateRow(id: string, patch: Partial<ReportRow>) {
@@ -219,7 +247,7 @@ export function ContainerManagement() {
     return next
   }
 
-  function submit(event: React.FormEvent<HTMLFormElement>) {
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const inputRows = rows.filter(hasContent)
     const nextErrors: string[] = []
@@ -264,7 +292,64 @@ export function ContainerManagement() {
       }
     })
 
-    persist({ assignments, reports: [...reports, ...stored.reports], thresholds: stored.thresholds })
+    setLoading(true)
+    const usedAssets = new Map<string, NonNullable<ReturnType<typeof asset>>>()
+    inputRows.forEach((row) => {
+      const install = asset(row.installAssetId)
+      const collect = asset(row.collectAssetId)
+      if (install) usedAssets.set(install.id, install)
+      if (collect) usedAssets.set(collect.id, collect)
+    })
+    const assetsResult = await supabase.from('container_assets').upsert(
+      Array.from(usedAssets.values()).map((item) => ({ id: item.id, label: item.label, asset_type: item.assetType, size_label: item.sizeLabel })),
+      { onConflict: 'id' },
+    )
+    if (assetsResult.error) {
+      setErrors([`コンテナ情報を保存できませんでした：${assetsResult.error.message}`])
+      setLoading(false)
+      return
+    }
+
+    const collected = stored.assignments.filter((before) => assignments.some((after) => after.id === before.id && after.collectedOn && !before.collectedOn))
+    const collectResults = await Promise.all(collected.map((item) =>
+      supabase.from('container_assignments').update({ collected_on: workDate }).eq('id', item.id),
+    ))
+    const collectError = collectResults.find((result) => result.error)?.error
+    if (collectError) {
+      setErrors([`引上げ情報を保存できませんでした：${collectError.message}`])
+      setLoading(false)
+      return
+    }
+
+    const reportsResult = await supabase.from('container_reports').insert(reports.map((item) => ({
+      id: item.id, work_date: item.workDate, company_name: item.companyName, site_name: item.siteName,
+      driver_name: item.driverName, work_type: item.workType, install_asset_id: item.installAssetId ?? null,
+      install_asset_label: item.installAssetLabel ?? null, collect_asset_id: item.collectAssetId ?? null,
+      collect_asset_label: item.collectAssetLabel ?? null, asset_type: item.assetType, size_label: item.sizeLabel,
+      quantity: item.quantity, note: item.note ?? null,
+    })))
+    if (reportsResult.error) {
+      setErrors([`日報を保存できませんでした：${reportsResult.error.message}`])
+      setLoading(false)
+      return
+    }
+
+    const addedAssignments = assignments.filter((item) => !stored.assignments.some((before) => before.id === item.id))
+    if (addedAssignments.length) {
+      const assignmentsResult = await supabase.from('container_assignments').insert(addedAssignments.map((item) => ({
+        id: item.id, asset_id: item.assetId, asset_label: item.assetLabel, asset_type: item.assetType,
+        size_label: item.sizeLabel, company_name: item.companyName, site_name: item.siteName,
+        installed_on: item.installedOn, collected_on: item.collectedOn ?? null, quantity: item.quantity,
+        note: item.note ?? null,
+      })))
+      if (assignmentsResult.error) {
+        setErrors([`設置情報を保存できませんでした：${assignmentsResult.error.message}`])
+        setLoading(false)
+        return
+      }
+    }
+
+    await loadFromSupabase()
     setCompanyQuery(reports[0]?.companyName ?? '')
     setContainerQuery(reports[0]?.installAssetLabel ?? reports[0]?.collectAssetLabel ?? '')
     setRows([emptyRow(), emptyRow(), emptyRow()])
@@ -272,15 +357,39 @@ export function ContainerManagement() {
   }
 
   function reset() {
-    persist({ assignments: initialAssignments, reports: initialReports, thresholds: longTermThresholds })
     setRows(defaultRows())
     setDriverName('')
     setErrors([])
-    setMessage('見本データに戻しました。')
+    setMessage('入力内容をクリアしました。')
   }
+
+  async function signIn(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setAuthError('')
+    setLoading(true)
+    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password })
+    if (error) setAuthError('メールアドレスまたはパスワードが正しくありません。')
+    setLoading(false)
+  }
+
+  if (!authReady) return <div className="panel p-8 text-center font-bold">読み込み中です…</div>
+
+  if (!session) return (
+    <section className="panel mx-auto max-w-md rounded-none p-7">
+      <div className="flex items-center gap-3"><Truck className="h-9 w-9 text-emerald-800" /><h2 className="text-2xl font-black">コンテナ管理システム</h2></div>
+      <p className="mt-3 text-sm text-slate-600">登録済みのメールアドレスとパスワードでログインしてください。</p>
+      <form className="mt-6 space-y-4" onSubmit={signIn}>
+        <label className="block text-sm font-bold">メールアドレス<input type="email" autoComplete="email" required className="mt-2 w-full border border-slate-300 px-4 py-3" value={email} onChange={(event) => setEmail(event.target.value)} /></label>
+        <label className="block text-sm font-bold">パスワード<input type="password" autoComplete="current-password" required className="mt-2 w-full border border-slate-300 px-4 py-3" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
+        {authError ? <p className="bg-rose-50 p-3 text-sm font-bold text-rose-800">{authError}</p> : null}
+        <button disabled={loading} className="w-full bg-emerald-800 px-4 py-4 font-black text-white disabled:opacity-60">{loading ? '確認中…' : 'ログイン'}</button>
+      </form>
+    </section>
+  )
 
   return (
     <div className="space-y-6">
+      <div className="no-print flex items-center justify-end gap-3 text-sm text-slate-600"><span>{session.user.email}</span><button type="button" onClick={() => void supabase.auth.signOut()} className="inline-flex items-center gap-2 border border-slate-300 bg-white px-3 py-2 font-bold"><LogOut className="h-4 w-4" />ログアウト</button></div>
       <nav className="no-print panel grid rounded-none p-2 sm:grid-cols-3" aria-label="管理メニュー">
         {([
           ['daily', '日報入力・設置状況'],
@@ -346,8 +455,8 @@ export function ContainerManagement() {
         {errors.length ? <div className="mt-5 border-l-8 border-rose-700 bg-rose-50 p-4 text-sm font-bold leading-7 text-rose-900">{errors.map((error) => <p key={error}>{error}</p>)}</div> : null}
         {message ? <p className="mt-5 bg-sky-50 px-4 py-3 text-sm font-bold text-sky-800">{message}</p> : null}
         <div className="mt-5 grid gap-3 sm:grid-cols-[1fr_auto]">
-          <button type="submit" className="bg-emerald-700 px-4 py-4 text-base font-black text-white">この日報を登録して管理表へ反映</button>
-          <button type="button" className="inline-flex items-center justify-center gap-2 border border-slate-300 px-4 py-4 text-sm font-black" onClick={reset}><RotateCcw className="h-5 w-5" />見本へ戻す</button>
+          <button type="submit" disabled={loading} className="bg-emerald-700 px-4 py-4 text-base font-black text-white disabled:opacity-60">{loading ? '保存中…' : 'この日報を登録して管理表へ反映'}</button>
+          <button type="button" className="inline-flex items-center justify-center gap-2 border border-slate-300 px-4 py-4 text-sm font-black" onClick={reset}><RotateCcw className="h-5 w-5" />入力をクリア</button>
         </div>
       </form>
 
@@ -370,7 +479,7 @@ export function ContainerManagement() {
           <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
             <label className="block text-sm font-bold text-slate-700">コンテナ番号
               <input className="mt-2 block min-w-72 border border-slate-300 bg-white px-4 py-3" list="container-ledger-options" placeholder="番号を入力して検索" value={ledgerAssetQuery} onChange={(event) => selectLedgerAsset(event.target.value)} />
-              <datalist id="container-ledger-options">{containerAssets.map((item) => <option key={item.id} value={item.label}>{item.sizeLabel}・{item.assetType}</option>)}</datalist>
+              <datalist id="container-ledger-options">{knownAssets.map((item) => <option key={item.id} value={item.label}>{item.sizeLabel}・{item.assetType}</option>)}</datalist>
             </label>
             <button type="button" className="inline-flex items-center justify-center gap-2 bg-emerald-800 px-5 py-3 font-black text-white" onClick={() => printSheet('container-ledger')}><Printer className="h-5 w-5" />A4 PDF・印刷</button>
           </div>
