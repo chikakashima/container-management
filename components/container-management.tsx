@@ -82,8 +82,19 @@ function typeColor(type: ContainerWorkType) {
   return 'bg-amber-100 text-amber-800'
 }
 
-function fiscalYears(reports: ContainerReport[]) {
-  return Array.from(new Set(reports.map((report) => report.workDate.slice(0, 4)))).sort((a, b) => b.localeCompare(a))
+const PAGE_SIZE = 500
+
+function reportFromRow(item: Record<string, unknown>): ContainerReport {
+  return {
+    id: String(item.id), workDate: String(item.work_date), companyName: String(item.company_name), siteName: String(item.site_name),
+    driverName: String(item.driver_name), workType: item.work_type as ContainerWorkType,
+    installAssetId: item.install_asset_id ? String(item.install_asset_id) : undefined,
+    installAssetLabel: item.install_asset_label ? String(item.install_asset_label) : undefined,
+    collectAssetId: item.collect_asset_id ? String(item.collect_asset_id) : undefined,
+    collectAssetLabel: item.collect_asset_label ? String(item.collect_asset_label) : undefined,
+    assetType: item.asset_type as ContainerReport['assetType'], sizeLabel: String(item.size_label),
+    quantity: String(item.quantity), note: item.note ? String(item.note) : undefined,
+  }
 }
 
 export function ContainerManagement() {
@@ -107,6 +118,11 @@ export function ContainerManagement() {
   const [historyCompany, setHistoryCompany] = useState('')
   const [historyYear, setHistoryYear] = useState(String(new Date().getFullYear()))
   const [printTarget, setPrintTarget] = useState<PrintTarget>(null)
+  const [companyOptions, setCompanyOptions] = useState<string[]>([])
+  const [assetOptions, setAssetOptions] = useState<Array<{ id: string; label: string; assetType: 'コンテナ' | 'カゴ'; sizeLabel: string }>>([])
+  const [ledgerRows, setLedgerRows] = useState<ContainerReport[]>([])
+  const [historyRows, setHistoryRows] = useState<ContainerReport[]>([])
+  const [sheetLoading, setSheetLoading] = useState(false)
 
   useEffect(() => {
     void supabase.auth.getSession().then(({ data }) => {
@@ -131,29 +147,23 @@ export function ContainerManagement() {
   async function loadFromSupabase() {
     setLoading(true)
     setErrors([])
-    const [assignmentsResult, reportsResult] = await Promise.all([
-      supabase.from('container_assignments').select('*').order('installed_on', { ascending: false }),
-      supabase.from('container_reports').select('*').order('work_date', { ascending: false }),
-    ])
-    if (assignmentsResult.error || reportsResult.error) {
-      setErrors([assignmentsResult.error?.message ?? reportsResult.error?.message ?? 'データを読み込めませんでした。'])
-      setLoading(false)
-      return
+    const assignments: ContainerAssignment[] = []
+    for (let from = 0; ; from += PAGE_SIZE) {
+      const result = await supabase.from('container_assignments').select('*').is('collected_on', null)
+        .order('installed_on', { ascending: false }).range(from, from + PAGE_SIZE - 1)
+      if (result.error) {
+        setErrors([result.error.message || 'データを読み込めませんでした。'])
+        setLoading(false)
+        return
+      }
+      assignments.push(...(result.data ?? []).map((item) => ({
+        id: item.id, assetId: item.asset_id, assetLabel: item.asset_label, assetType: item.asset_type,
+        sizeLabel: item.size_label, companyName: item.company_name, siteName: item.site_name,
+        installedOn: item.installed_on, collectedOn: undefined, quantity: item.quantity, note: item.note ?? undefined,
+      })))
+      if ((result.data?.length ?? 0) < PAGE_SIZE) break
     }
-    const assignments: ContainerAssignment[] = (assignmentsResult.data ?? []).map((item) => ({
-      id: item.id, assetId: item.asset_id, assetLabel: item.asset_label, assetType: item.asset_type,
-      sizeLabel: item.size_label, companyName: item.company_name, siteName: item.site_name,
-      installedOn: item.installed_on, collectedOn: item.collected_on ?? undefined,
-      quantity: item.quantity, note: item.note ?? undefined,
-    }))
-    const reports: ContainerReport[] = (reportsResult.data ?? []).map((item) => ({
-      id: item.id, workDate: item.work_date, companyName: item.company_name, siteName: item.site_name,
-      driverName: item.driver_name, workType: item.work_type, installAssetId: item.install_asset_id ?? undefined,
-      installAssetLabel: item.install_asset_label ?? undefined, collectAssetId: item.collect_asset_id ?? undefined,
-      collectAssetLabel: item.collect_asset_label ?? undefined, assetType: item.asset_type,
-      sizeLabel: item.size_label, quantity: item.quantity, note: item.note ?? undefined,
-    }))
-    setStored({ assignments, reports, thresholds: longTermThresholds })
+    setStored({ assignments, reports: [], thresholds: longTermThresholds })
     setLoading(false)
   }
 
@@ -167,25 +177,85 @@ export function ContainerManagement() {
     if (companyQuery.trim()) return active.filter((item) => normalize(item.companyName).includes(normalize(companyQuery)))
     return active
   }, [active, companyQuery, containerQuery])
-  const companies = useMemo(() => Array.from(new Set(stored.reports.map((report) => report.companyName))).sort((a, b) => a.localeCompare(b, 'ja')), [stored.reports])
-  const years = useMemo(() => fiscalYears(stored.reports), [stored.reports])
-  const knownAssets = useMemo(() => {
-    const values = new Map<string, { id: string; label: string; assetType: 'コンテナ' | 'カゴ'; sizeLabel: string }>()
-    stored.reports.forEach((report) => {
-      if (report.installAssetId && report.installAssetLabel) values.set(report.installAssetId, { id: report.installAssetId, label: report.installAssetLabel, assetType: report.assetType === '手積み' ? 'コンテナ' : report.assetType, sizeLabel: report.sizeLabel })
-      if (report.collectAssetId && report.collectAssetLabel) values.set(report.collectAssetId, { id: report.collectAssetId, label: report.collectAssetLabel, assetType: report.assetType === '手積み' ? 'コンテナ' : report.assetType, sizeLabel: report.sizeLabel })
-    })
-    return Array.from(values.values()).sort((a, b) => a.label.localeCompare(b.label, 'ja', { numeric: true }))
-  }, [stored.reports])
+  const years = useMemo(() => Array.from({ length: 11 }, (_, index) => String(new Date().getFullYear() + 1 - index)), [])
   const selectedAsset = asset(ledgerAssetId)
-  const ledgerRows = useMemo(
-    () => stored.reports.filter((report) => report.installAssetId === ledgerAssetId || report.collectAssetId === ledgerAssetId).sort((a, b) => a.workDate.localeCompare(b.workDate)),
-    [ledgerAssetId, stored.reports],
-  )
-  const historyRows = useMemo(
-    () => stored.reports.filter((report) => report.companyName === historyCompany && report.workDate.startsWith(`${historyYear}-`)).sort((a, b) => a.workDate.localeCompare(b.workDate)),
-    [historyCompany, historyYear, stored.reports],
-  )
+
+  useEffect(() => {
+    if (!session || !ledgerAssetQuery.trim()) {
+      setAssetOptions([])
+      return
+    }
+    const timer = window.setTimeout(async () => {
+      const digits = ledgerAssetQuery.replace(/\D/g, '')
+      const result = await supabase.from('container_assets').select('id,label,asset_type,size_label')
+        .ilike('label', `%${digits || ledgerAssetQuery.trim()}%`).limit(30)
+      if (!result.error) setAssetOptions((result.data ?? []).map((item) => ({ id: item.id, label: item.label, assetType: item.asset_type, sizeLabel: item.size_label })))
+    }, 250)
+    return () => window.clearTimeout(timer)
+  }, [ledgerAssetQuery, session])
+
+  useEffect(() => {
+    if (!session || historyCompany.trim().length < 1) {
+      setCompanyOptions([])
+      return
+    }
+    const timer = window.setTimeout(async () => {
+      const result = await supabase.from('container_reports').select('company_name')
+        .ilike('company_name', `%${historyCompany.trim()}%`).limit(200)
+      if (!result.error) setCompanyOptions(Array.from(new Set((result.data ?? []).map((item) => item.company_name))).slice(0, 30))
+    }, 250)
+    return () => window.clearTimeout(timer)
+  }, [historyCompany, session])
+
+  useEffect(() => {
+    if (!session || !ledgerAssetId) {
+      setLedgerRows([])
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      setSheetLoading(true)
+      const reports: ContainerReport[] = []
+      for (let from = 0; ; from += PAGE_SIZE) {
+        const result = await supabase.from('container_reports').select('*')
+          .or(`install_asset_id.eq.${ledgerAssetId},collect_asset_id.eq.${ledgerAssetId}`)
+          .order('work_date', { ascending: true }).range(from, from + PAGE_SIZE - 1)
+        if (result.error || cancelled) break
+        reports.push(...(result.data ?? []).map(reportFromRow))
+        if ((result.data?.length ?? 0) < PAGE_SIZE) break
+      }
+      if (!cancelled) {
+        setLedgerRows(reports)
+        setSheetLoading(false)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [ledgerAssetId, session])
+
+  useEffect(() => {
+    if (!session || !historyCompany.trim() || !historyYear) {
+      setHistoryRows([])
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      setSheetLoading(true)
+      const reports: ContainerReport[] = []
+      for (let from = 0; ; from += PAGE_SIZE) {
+        const result = await supabase.from('container_reports').select('*').eq('company_name', historyCompany.trim())
+          .gte('work_date', `${historyYear}-01-01`).lte('work_date', `${historyYear}-12-31`)
+          .order('work_date', { ascending: true }).range(from, from + PAGE_SIZE - 1)
+        if (result.error || cancelled) break
+        reports.push(...(result.data ?? []).map(reportFromRow))
+        if ((result.data?.length ?? 0) < PAGE_SIZE) break
+      }
+      if (!cancelled) {
+        setHistoryRows(reports)
+        setSheetLoading(false)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [historyCompany, historyYear, session])
 
   function printSheet(target: Exclude<PrintTarget, null>) {
     setPrintTarget(target)
@@ -197,7 +267,7 @@ export function ContainerManagement() {
 
   function selectLedgerAsset(value: string) {
     setLedgerAssetQuery(value)
-    const exact = knownAssets.find((item) => item.label === value || `${item.label}（${item.sizeLabel}・${item.assetType}）` === value)
+    const exact = assetOptions.find((item) => item.label === value || `${item.label}（${item.sizeLabel}・${item.assetType}）` === value)
     if (exact) setLedgerAssetId(exact.id)
     else if (value.replace(/\D/g, '')) setLedgerAssetId(`container-${value.replace(/\D/g, '')}`)
   }
@@ -477,11 +547,12 @@ export function ContainerManagement() {
           <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
             <label className="block text-sm font-bold text-slate-700">コンテナ番号
               <input className="mt-2 block min-w-72 border border-slate-300 bg-white px-4 py-3" list="container-ledger-options" placeholder="番号を入力して検索" value={ledgerAssetQuery} onChange={(event) => selectLedgerAsset(event.target.value)} />
-              <datalist id="container-ledger-options">{knownAssets.map((item) => <option key={item.id} value={item.label}>{item.sizeLabel}・{item.assetType}</option>)}</datalist>
+              <datalist id="container-ledger-options">{assetOptions.map((item) => <option key={item.id} value={item.label}>{item.sizeLabel}・{item.assetType}</option>)}</datalist>
             </label>
             <button type="button" className="inline-flex items-center justify-center gap-2 bg-emerald-800 px-5 py-3 font-black text-white" onClick={() => printSheet('container-ledger')}><Printer className="h-5 w-5" />A4 PDF・印刷</button>
           </div>
         </div>
+        {sheetLoading ? <p className="no-print text-sm font-bold text-emerald-800">帳票データを読み込み中です…</p> : null}
         <div className={`paper-sheet paper-portrait ${printTarget === 'container-ledger' ? 'print-target' : ''}`}>
           <div className="paper-title-row"><p>No. <span>{selectedAsset?.label.replace('番', '')}</span></p><h2>コンテナ管理表</h2></div>
           <table className="paper-table container-ledger-table">
@@ -499,7 +570,7 @@ export function ContainerManagement() {
           <div className="grid gap-4 md:grid-cols-[1fr_180px_auto] md:items-end">
             <label className="block text-sm font-bold text-slate-700">排出事業者名
               <input className="mt-2 block w-full border border-slate-300 bg-white px-4 py-3" list="history-company-options" placeholder="事業者名を入力して検索" value={historyCompany} onChange={(event) => setHistoryCompany(event.target.value)} />
-              <datalist id="history-company-options">{companies.map((company) => <option key={company} value={company} />)}</datalist>
+              <datalist id="history-company-options">{companyOptions.map((company) => <option key={company} value={company} />)}</datalist>
             </label>
             <label className="block text-sm font-bold text-slate-700">管理年
               <select className="mt-2 block w-full border border-slate-300 bg-white px-4 py-3" value={historyYear} onChange={(event) => setHistoryYear(event.target.value)}>{years.map((year) => <option key={year}>{year}年</option>)}</select>
@@ -508,6 +579,7 @@ export function ContainerManagement() {
           </div>
           <p className="mt-3 text-sm text-slate-600">排出事業者名と年を選ぶと、1年分の収集履歴を紙と同じ形式で保存できます。</p>
         </div>
+        {sheetLoading ? <p className="no-print text-sm font-bold text-emerald-800">帳票データを読み込み中です…</p> : null}
         <div className={`paper-sheet paper-landscape ${printTarget === 'collection-history' ? 'print-target' : ''}`}>
           <div className="collection-heading"><div><span>排出事業者名</span><strong>{historyCompany}</strong></div><h2>収集履歴</h2><p>{historyYear}年</p></div>
           <table className="paper-table collection-table">
