@@ -225,8 +225,7 @@ export function ContainerManagement() {
 
       if (collect) {
         const current = working.find((item) =>
-          item.assetId === collect.id && !item.collectedOn &&
-          (collect.assetType !== 'カゴ' || normalize(item.companyName) === normalize(row.companyName)),
+          item.assetId === collect.id && !item.collectedOn,
         )
         if (!current) next.push(`${line}行目：${collect.label}は現在設置中ではありません。`)
         else if (normalize(current.companyName) !== normalize(row.companyName)) {
@@ -268,8 +267,7 @@ export function ContainerManagement() {
       const collect = asset(row.collectAssetId)
       if (collect) {
         const target = assignments.find((item) =>
-          item.assetId === collect.id && !item.collectedOn &&
-          (collect.assetType !== 'カゴ' || normalize(item.companyName) === normalize(row.companyName)),
+          item.assetId === collect.id && !item.collectedOn,
         )
         if (target) assignments = assignments.map((item) => item.id === target.id ? { ...item, collectedOn: workDate } : item)
       }
