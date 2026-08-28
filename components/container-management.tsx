@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, LogOut, PackageCheck, Plus, Printer, RotateCcw, Search, Trash2, Truck } from 'lucide-react'
+import { AlertTriangle, KeyRound, LogOut, PackageCheck, Plus, Printer, RotateCcw, Search, Trash2, Truck } from 'lucide-react'
 import type { Session } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
 import {
@@ -97,12 +97,39 @@ function reportFromRow(item: Record<string, unknown>): ContainerReport {
   }
 }
 
+type PasswordChangeFormProps = {
+  loading: boolean
+  error: string
+  newPassword: string
+  confirm: string
+  onPassword: (value: string) => void
+  onConfirm: (value: string) => void
+  onSubmit: (event: React.FormEvent<HTMLFormElement>) => void
+}
+
+function PasswordChangeForm({ loading, error, newPassword, confirm, onPassword, onConfirm, onSubmit }: PasswordChangeFormProps) {
+  return (
+    <form className="mt-5 space-y-4" onSubmit={onSubmit}>
+      <label className="block text-sm font-bold">新しいパスワード<input type="password" autoComplete="new-password" minLength={8} required className="mt-2 w-full border border-slate-300 px-4 py-3" value={newPassword} onChange={(event) => onPassword(event.target.value)} /></label>
+      <label className="block text-sm font-bold">新しいパスワード（確認）<input type="password" autoComplete="new-password" minLength={8} required className="mt-2 w-full border border-slate-300 px-4 py-3" value={confirm} onChange={(event) => onConfirm(event.target.value)} /></label>
+      {error ? <p className="bg-rose-50 p-3 text-sm font-bold text-rose-800">{error}</p> : null}
+      <button disabled={loading} className="w-full bg-emerald-800 px-4 py-3 font-black text-white disabled:opacity-60">{loading ? '変更中…' : 'パスワードを変更'}</button>
+    </form>
+  )
+}
+
 export function ContainerManagement() {
   const [session, setSession] = useState<Session | null>(null)
   const [authReady, setAuthReady] = useState(false)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [authError, setAuthError] = useState('')
+  const [authMessage, setAuthMessage] = useState('')
+  const [forgotPassword, setForgotPassword] = useState(false)
+  const [passwordRecovery, setPasswordRecovery] = useState(false)
+  const [showPasswordChange, setShowPasswordChange] = useState(false)
+  const [newPassword, setNewPassword] = useState('')
+  const [newPasswordConfirm, setNewPasswordConfirm] = useState('')
   const [loading, setLoading] = useState(false)
   const [stored, setStored] = useState<{ assignments: ContainerAssignment[]; reports: ContainerReport[]; thresholds: LongTermThreshold[] }>({ assignments: [], reports: [], thresholds: longTermThresholds })
   const [workDate, setWorkDate] = useState(today())
@@ -129,9 +156,13 @@ export function ContainerManagement() {
       setSession(data.session)
       setAuthReady(true)
     })
-    const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+    const { data } = supabase.auth.onAuthStateChange((event, nextSession) => {
       setSession(nextSession)
       setAuthReady(true)
+      if (event === 'PASSWORD_RECOVERY') {
+        setPasswordRecovery(true)
+        setShowPasswordChange(true)
+      }
     })
     return () => data.subscription.unsubscribe()
   }, [])
@@ -440,24 +471,85 @@ export function ContainerManagement() {
     setLoading(false)
   }
 
+  async function sendPasswordReset(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setAuthError('')
+    setAuthMessage('')
+    setLoading(true)
+    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+      redirectTo: `${window.location.origin}/`,
+    })
+    if (error) {
+      setAuthError('再設定メールを送信できませんでした。メールアドレスをご確認ください。')
+    } else {
+      setAuthMessage('パスワード再設定メールを送信しました。メール内のリンクを開いてください。')
+    }
+    setLoading(false)
+  }
+
+  async function changePassword(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setAuthError('')
+    setAuthMessage('')
+    if (newPassword.length < 8) {
+      setAuthError('新しいパスワードは8文字以上で入力してください。')
+      return
+    }
+    if (newPassword !== newPasswordConfirm) {
+      setAuthError('確認用パスワードが一致しません。')
+      return
+    }
+    setLoading(true)
+    const { error } = await supabase.auth.updateUser({ password: newPassword })
+    if (error) {
+      setAuthError('パスワードを変更できませんでした。時間をおいてもう一度お試しください。')
+    } else {
+      setNewPassword('')
+      setNewPasswordConfirm('')
+      setPasswordRecovery(false)
+      setShowPasswordChange(false)
+      setAuthMessage('パスワードを変更しました。')
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+    setLoading(false)
+  }
+
   if (!authReady) return <div className="panel p-8 text-center font-bold">読み込み中です…</div>
 
   if (!session) return (
     <section className="panel mx-auto max-w-md rounded-none p-7">
       <div className="flex items-center gap-3"><Truck className="h-9 w-9 text-emerald-800" /><h2 className="text-2xl font-black">コンテナ管理システム</h2></div>
-      <p className="mt-3 text-sm text-slate-600">登録済みのメールアドレスとパスワードでログインしてください。</p>
-      <form className="mt-6 space-y-4" onSubmit={signIn}>
+      <p className="mt-3 text-sm text-slate-600">{forgotPassword ? '登録済みのメールアドレスへ、パスワード再設定メールを送信します。' : '登録済みのメールアドレスとパスワードでログインしてください。'}</p>
+      <form className="mt-6 space-y-4" onSubmit={forgotPassword ? sendPasswordReset : signIn}>
         <label className="block text-sm font-bold">メールアドレス<input type="email" autoComplete="email" required className="mt-2 w-full border border-slate-300 px-4 py-3" value={email} onChange={(event) => setEmail(event.target.value)} /></label>
-        <label className="block text-sm font-bold">パスワード<input type="password" autoComplete="current-password" required className="mt-2 w-full border border-slate-300 px-4 py-3" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
+        {!forgotPassword ? <label className="block text-sm font-bold">パスワード<input type="password" autoComplete="current-password" required className="mt-2 w-full border border-slate-300 px-4 py-3" value={password} onChange={(event) => setPassword(event.target.value)} /></label> : null}
         {authError ? <p className="bg-rose-50 p-3 text-sm font-bold text-rose-800">{authError}</p> : null}
-        <button disabled={loading} className="w-full bg-emerald-800 px-4 py-4 font-black text-white disabled:opacity-60">{loading ? '確認中…' : 'ログイン'}</button>
+        {authMessage ? <p className="bg-emerald-50 p-3 text-sm font-bold text-emerald-800">{authMessage}</p> : null}
+        <button disabled={loading} className="w-full bg-emerald-800 px-4 py-4 font-black text-white disabled:opacity-60">{loading ? '確認中…' : forgotPassword ? '再設定メールを送信' : 'ログイン'}</button>
+        <button type="button" className="w-full py-2 text-sm font-bold text-emerald-800 underline" onClick={() => { setForgotPassword((value) => !value); setAuthError(''); setAuthMessage('') }}>
+          {forgotPassword ? 'ログイン画面に戻る' : 'パスワードを忘れた方'}
+        </button>
       </form>
+    </section>
+  )
+
+  if (passwordRecovery) return (
+    <section className="panel mx-auto max-w-md rounded-none p-7">
+      <div className="flex items-center gap-3"><KeyRound className="h-9 w-9 text-emerald-800" /><h2 className="text-2xl font-black">新しいパスワードを設定</h2></div>
+      <p className="mt-3 text-sm text-slate-600">8文字以上の新しいパスワードを入力してください。</p>
+      <PasswordChangeForm loading={loading} error={authError} newPassword={newPassword} confirm={newPasswordConfirm} onPassword={setNewPassword} onConfirm={setNewPasswordConfirm} onSubmit={changePassword} />
     </section>
   )
 
   return (
     <div className="space-y-6">
-      <div className="no-print flex items-center justify-end gap-3 text-sm text-slate-600"><span>{session.user.email}</span><button type="button" onClick={() => void supabase.auth.signOut()} className="inline-flex items-center gap-2 border border-slate-300 bg-white px-3 py-2 font-bold"><LogOut className="h-4 w-4" />ログアウト</button></div>
+      <div className="no-print flex flex-wrap items-center justify-end gap-3 text-sm text-slate-600">
+        <span>{session.user.email}</span>
+        <button type="button" onClick={() => { setShowPasswordChange((value) => !value); setAuthError(''); setAuthMessage('') }} className="inline-flex items-center gap-2 border border-slate-300 bg-white px-3 py-2 font-bold"><KeyRound className="h-4 w-4" />パスワード変更</button>
+        <button type="button" onClick={() => void supabase.auth.signOut()} className="inline-flex items-center gap-2 border border-slate-300 bg-white px-3 py-2 font-bold"><LogOut className="h-4 w-4" />ログアウト</button>
+      </div>
+      {showPasswordChange ? <section className="no-print panel ml-auto max-w-md rounded-none p-5"><h2 className="text-lg font-black">パスワード変更</h2><PasswordChangeForm loading={loading} error={authError} newPassword={newPassword} confirm={newPasswordConfirm} onPassword={setNewPassword} onConfirm={setNewPasswordConfirm} onSubmit={changePassword} /></section> : null}
+      {authMessage ? <p className="no-print bg-emerald-50 p-3 text-sm font-bold text-emerald-800">{authMessage}</p> : null}
       <nav className="no-print panel grid rounded-none p-2 sm:grid-cols-3" aria-label="管理メニュー">
         {([
           ['daily', '日報入力・設置状況'],
