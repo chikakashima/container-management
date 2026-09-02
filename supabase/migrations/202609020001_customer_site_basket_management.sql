@@ -159,20 +159,15 @@ begin
   foreach target_asset_id in array p_asset_ids loop
     perform pg_advisory_xact_lock(hashtextextended(target_asset_id || ':' || p_work_date::text, 0));
 
-    -- Remove a result previously calculated for this day, then restore the
-    -- assignment that was active at the start of the day.
+    -- Remove a result previously calculated for this day. An earlier
+    -- assignment whose collected_on equals this day remains eligible as the
+    -- start-of-day assignment, so no temporary reset to null is needed.
     delete from public.container_assignments a
       where a.asset_id = target_asset_id
         and a.source_report_id in (
           select r.id from public.container_reports r
           where r.work_date = p_work_date and r.install_asset_id = target_asset_id
         );
-
-    update public.container_assignments
-      set collected_on = null
-      where container_assignments.asset_id = target_asset_id
-        and collected_on = p_work_date
-        and installed_on < p_work_date;
 
     select count(*)
       into install_count
