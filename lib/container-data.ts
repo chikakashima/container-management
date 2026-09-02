@@ -22,6 +22,8 @@ export type ContainerAssignment = {
   collectedOn?: string
   quantity: string
   note?: string
+  customerId?: string
+  siteId?: string
 }
 
 export type ContainerReport = {
@@ -39,6 +41,36 @@ export type ContainerReport = {
   sizeLabel: string
   quantity: string
   note?: string
+  customerId?: string
+  siteId?: string
+  basketInstallCount?: number
+  basketCollectCount?: number
+  entryOrder?: number
+}
+
+export type CustomerMaster = {
+  id: string
+  customerCode: string
+  name: string
+  nameKana: string
+}
+
+export type SiteMaster = {
+  id: string
+  customerId: string
+  siteCode: string
+  name: string
+  nameKana: string
+}
+
+export type BasketBalance = {
+  id: string
+  customerId: string
+  siteId: string
+  companyName: string
+  siteName: string
+  basketType: string
+  quantity: number
 }
 
 export type LongTermThreshold = {
