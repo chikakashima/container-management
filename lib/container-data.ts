@@ -18,7 +18,7 @@ export type ContainerAssignment = {
   sizeLabel: string
   companyName: string
   siteName: string
-  installedOn: string
+  installedOn: string | null
   collectedOn?: string
   quantity: string
   note?: string
