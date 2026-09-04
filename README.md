@@ -22,8 +22,9 @@ Supabase SQL Editorで次の順にマイグレーションを実行します。
 
 1. `supabase/migrations/202608270001_initial_container_management.sql`
 2. `supabase/migrations/202609020001_customer_site_basket_management.sql`
+3. `supabase/migrations/202609050001_initial_import_support.sql`
 
-2本目は既存データを削除せず、顧客・現場・カゴ管理と日次再計算に必要なテーブル／列を追加します。
+2本目は既存データを削除せず、顧客・現場・カゴ管理と日次再計算に必要なテーブル／列を追加します。3本目は、設置日不明の初期データを長期設置日数の計算対象外として登録できるようにします。
 
 ## 環境変数
 
