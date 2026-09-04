@@ -18,6 +18,7 @@ import {
 type ReportRow = {
   id: string
   entryType: 'container' | 'basket'
+  basketType: string
   customerId: string
   companyName: string
   siteId: string
@@ -37,13 +38,14 @@ function today() {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
 }
 
-function formatDate(value: string) {
-  if (!value) return ''
+function formatDate(value: string | null | undefined) {
+  if (!value) return '設置日不明'
   const [year, month, day] = value.split('-')
   return `${year}/${Number(month)}/${Number(day)}`
 }
 
-function daysFrom(value: string) {
+function daysFrom(value: string | null | undefined) {
+  if (!value) return null
   const start = new Date(`${value}T12:00:00`).getTime()
   const end = new Date(`${today()}T12:00:00`).getTime()
   return Math.max(0, Math.floor((end - start) / 86_400_000))
@@ -55,7 +57,7 @@ function normalize(value: string) {
 
 function emptyRow(id = `row-${Date.now()}-${Math.random()}`): ReportRow {
   return {
-    id, entryType: 'container', customerId: '', companyName: '', siteId: '', siteName: '',
+    id, entryType: 'container', basketType: 'カゴ', customerId: '', companyName: '', siteId: '', siteName: '',
     installAssetId: '', collectAssetId: '', basketInstallCount: '', basketCollectCount: '', quantityNote: '',
   }
 }
@@ -89,15 +91,26 @@ function siteOption(site: SiteMaster) {
   return `${site.siteCode}｜${site.name}${site.nameKana ? `｜${site.nameKana}` : ''}`
 }
 
-function asset(assetId: string) {
-  if (!assetId) return undefined
-  const digits = assetId.replace(/\D/g, '')
-  return digits ? { id: `container-${digits}`, label: digits, assetType: 'コンテナ' as const, sizeLabel: '' } : undefined
+function normalizeAssetIdentifier(value: string) {
+  return value
+    .replace(/^container-/i, '')
+    .normalize('NFKC')
+    .toUpperCase()
+    .replace(/[\s　]/g, '')
+    .replace(/番$/u, '')
+    .replace(/[^A-Z0-9]/g, '')
 }
 
-function assetNumber(assetId: string) {
-  if (!assetId) return ''
-  return asset(assetId)?.label.replace(/\D/g, '') ?? assetId.replace(/\D/g, '')
+function asset(assetId: string) {
+  if (!assetId) return undefined
+  const identifier = normalizeAssetIdentifier(assetId)
+  return identifier
+    ? { id: `container-${identifier.toLowerCase()}`, label: identifier, assetType: 'コンテナ' as const, sizeLabel: '' }
+    : undefined
+}
+
+function assetIdentifier(assetId: string) {
+  return asset(assetId)?.label ?? ''
 }
 
 function typeColor(type: ContainerWorkType) {
@@ -229,7 +242,7 @@ export function ContainerManagement() {
       assignments.push(...(result.data ?? []).map((item) => ({
         id: item.id, assetId: item.asset_id, assetLabel: item.asset_label, assetType: item.asset_type,
         sizeLabel: item.size_label, companyName: item.company_name, siteName: item.site_name,
-        installedOn: item.installed_on, collectedOn: undefined, quantity: item.quantity, note: item.note ?? undefined,
+        installedOn: item.installed_on ? String(item.installed_on) : null, collectedOn: undefined, quantity: item.quantity, note: item.note ?? undefined,
         customerId: item.customer_id ?? undefined, siteId: item.site_id ?? undefined,
       })))
       if ((result.data?.length ?? 0) < PAGE_SIZE) break
@@ -264,7 +277,11 @@ export function ContainerManagement() {
 
   const active = useMemo(() => stored.assignments.filter((item) => !item.collectedOn), [stored.assignments])
   const longTerm = useMemo(
-    () => active.map((item) => ({ ...item, elapsedDays: daysFrom(item.installedOn) })).sort((a, b) => b.elapsedDays - a.elapsedDays),
+    () => active.flatMap((item) => {
+      const elapsedDays = daysFrom(item.installedOn)
+      return elapsedDays === null ? [] : [{ ...item, elapsedDays }]
+    })
+      .sort((a, b) => b.elapsedDays - a.elapsedDays),
     [active],
   )
   const searchResults = useMemo(() => {
@@ -291,9 +308,9 @@ export function ContainerManagement() {
   useEffect(() => {
     if (!session || !ledgerAssetQuery.trim()) return
     const timer = window.setTimeout(async () => {
-      const digits = ledgerAssetQuery.replace(/\D/g, '')
+      const identifier = normalizeAssetIdentifier(ledgerAssetQuery)
       const result = await supabase.from('container_assets').select('id,label,asset_type,size_label')
-        .ilike('label', `%${digits || ledgerAssetQuery.trim()}%`).limit(30)
+        .ilike('label', `%${identifier}%`).limit(30)
       if (!result.error) setAssetOptions((result.data ?? []).map((item) => ({ id: item.id, label: item.label, assetType: item.asset_type, sizeLabel: item.size_label })))
     }, 250)
     return () => window.clearTimeout(timer)
@@ -380,7 +397,10 @@ export function ContainerManagement() {
     }
     const exact = assetOptions.find((item) => item.label === value || `${item.label}（${item.sizeLabel}・${item.assetType}）` === value)
     if (exact) setLedgerAssetId(exact.id)
-    else if (value.replace(/\D/g, '')) setLedgerAssetId(`container-${value.replace(/\D/g, '')}`)
+    else {
+      const identifier = normalizeAssetIdentifier(value)
+      setLedgerAssetId(identifier ? `container-${identifier.toLowerCase()}` : '')
+    }
   }
 
   function updateRow(id: string, patch: Partial<ReportRow>) {
@@ -422,6 +442,7 @@ export function ContainerManagement() {
       if (workType(row) !== '設置' && !row.quantityNote.trim()) next.push(`${line}行目：受託数量・備考を入力してください。`)
 
       if (row.entryType === 'basket') {
+        if (!row.basketType.trim()) next.push(`${line}行目：カゴ等の種類を入力してください。`)
         if (!Number.isInteger(basketInstall) || !Number.isInteger(basketCollect) || basketInstall < 0 || basketCollect < 0) {
           next.push(`${line}行目：カゴの設置・引上げは0以上の整数で入力してください。`)
         }
@@ -477,20 +498,22 @@ export function ContainerManagement() {
 
     })
 
-    const basketGroups = new Map<string, { row: ReportRow; install: number; collect: number; line: number }>()
+    const basketGroups = new Map<string, { row: ReportRow; basketType: string; install: number; collect: number; line: number }>()
     inputRows.forEach((row, index) => {
       if (row.entryType !== 'basket' || !row.customerId || !row.siteId) return
-      const key = `${row.customerId}:${row.siteId}`
+      const basketType = row.basketType.trim()
+      const key = `${row.customerId}:${row.siteId}:${basketType}`
       const current = basketGroups.get(key)
       basketGroups.set(key, {
         row,
+        basketType,
         install: (current?.install ?? 0) + Number(row.basketInstallCount || 0),
         collect: (current?.collect ?? 0) + Number(row.basketCollectCount || 0),
         line: current?.line ?? index + 1,
       })
     })
     basketGroups.forEach((movement) => {
-      const current = basketBalances.find((item) => item.customerId === movement.row.customerId && item.siteId === movement.row.siteId)?.quantity ?? 0
+      const current = basketBalances.find((item) => item.customerId === movement.row.customerId && item.siteId === movement.row.siteId && item.basketType === movement.basketType)?.quantity ?? 0
       if (current + movement.install - movement.collect < 0) {
         next.push(`${movement.line}行目：カゴの引上げ台数が現在の設置台数（${current}台）を超えています。`)
       }
@@ -530,7 +553,7 @@ export function ContainerManagement() {
         collectAssetId: collect?.id,
         collectAssetLabel: collect?.label,
         assetType: row.entryType === 'basket' ? 'カゴ' : install?.assetType ?? collect?.assetType ?? '手積み',
-        sizeLabel: row.entryType === 'basket' ? 'カゴ' : install?.sizeLabel ?? collect?.sizeLabel ?? '手積み',
+        sizeLabel: row.entryType === 'basket' ? row.basketType.trim() : install?.sizeLabel ?? collect?.sizeLabel ?? '手積み',
         quantity: row.quantityNote.trim(),
         note: row.quantityNote.trim() || undefined,
         basketInstallCount: Number(row.basketInstallCount || 0),
@@ -597,7 +620,7 @@ export function ContainerManagement() {
         p_site_name: movement.row.siteName.trim(),
         p_install_count: movement.install,
         p_collect_count: movement.collect,
-        p_basket_type: 'カゴ',
+        p_basket_type: movement.basketType,
       }),
     ))
     const basketError = basketResults.find((result) => result.error)?.error
@@ -820,9 +843,10 @@ export function ContainerManagement() {
               const availableSites = sites.filter((site) => site.customerId === row.customerId)
               return <tr key={row.id} className="bg-white align-top">
                 <td className="border border-slate-300 px-3 py-4 text-center font-black">{index + 1}</td>
-                <td className="border border-slate-300 p-2"><select className="min-w-28 border border-slate-200 bg-white px-3 py-3" value={row.entryType} onChange={(event) => updateRow(row.id, event.target.value === 'basket'
+                <td className="border border-slate-300 p-2"><select className="min-w-32 border border-slate-200 bg-white px-3 py-3" value={row.entryType} onChange={(event) => updateRow(row.id, event.target.value === 'basket'
                   ? { entryType: 'basket', installAssetId: '', collectAssetId: '' }
-                  : { entryType: 'container', basketInstallCount: '', basketCollectCount: '' })}><option value="container">コンテナ</option><option value="basket">カゴ</option></select></td>
+                  : { entryType: 'container', basketInstallCount: '', basketCollectCount: '' })}><option value="container">コンテナ</option><option value="basket">台数管理</option></select>
+                  {row.entryType === 'basket' ? <><input className="mt-2 min-w-32 border border-slate-200 px-3 py-3" list={`basket-type-options-${row.id}`} placeholder="種類を入力" value={row.basketType} onChange={(event) => updateRow(row.id, { basketType: event.target.value })} /><datalist id={`basket-type-options-${row.id}`}>{['カゴ', '1.5カゴ', 'IBCコンテナ', 'ネット', 'ネット(8㎥)', '黒ネット', 'シート', 'シート(8㎥)', 'ブルーシート', 'キーパー', '岩本コンテナ', '山畑コンテナ（4㎥）', '宇賀神カゴ', 'GOKO(4㎥)'].map((item) => <option key={item} value={item} />)}</datalist></> : null}</td>
                 <td className="border border-slate-300 p-2">
                   <input className="w-full min-w-56 border border-slate-200 px-3 py-3" list={`customer-options-${row.id}`} placeholder="番号・名称・カナで検索" value={selectedCustomer ? customerOption(selectedCustomer) : row.companyName} onChange={(event) => updateCustomer(row.id, event.target.value)} />
                   <datalist id={`customer-options-${row.id}`}>{customers.map((customer) => <option key={customer.id} value={customerOption(customer)} />)}</datalist>
@@ -833,10 +857,10 @@ export function ContainerManagement() {
                 </td>
                 <td className="border border-slate-300 p-2">{row.entryType === 'basket'
                   ? <input type="number" min="0" step="1" inputMode="numeric" className="w-full min-w-24 border border-slate-200 px-3 py-3" placeholder="台数" value={row.basketInstallCount} onChange={(event) => updateRow(row.id, { basketInstallCount: event.target.value })} />
-                  : <input inputMode="numeric" pattern="[0-9]*" className="w-full min-w-24 border border-slate-200 px-3 py-3" placeholder="例：408" value={assetNumber(row.installAssetId)} onChange={(event) => updateRow(row.id, { installAssetId: event.target.value.replace(/\D/g, '') })} />}</td>
+                  : <input autoCapitalize="characters" className="w-full min-w-28 border border-slate-200 px-3 py-3" placeholder="408 / CS002" value={assetIdentifier(row.installAssetId)} onChange={(event) => updateRow(row.id, { installAssetId: normalizeAssetIdentifier(event.target.value) })} />}</td>
                 <td className="border border-slate-300 p-2">{row.entryType === 'basket'
                   ? <input type="number" min="0" step="1" inputMode="numeric" className="w-full min-w-24 border border-slate-200 px-3 py-3" placeholder="台数" value={row.basketCollectCount} onChange={(event) => updateRow(row.id, { basketCollectCount: event.target.value })} />
-                  : <input inputMode="numeric" pattern="[0-9]*" className="w-full min-w-24 border border-slate-200 px-3 py-3" placeholder="例：210" value={assetNumber(row.collectAssetId)} onChange={(event) => updateRow(row.id, { collectAssetId: event.target.value.replace(/\D/g, '') })} />}</td>
+                  : <input autoCapitalize="characters" className="w-full min-w-28 border border-slate-200 px-3 py-3" placeholder="210 / M003" value={assetIdentifier(row.collectAssetId)} onChange={(event) => updateRow(row.id, { collectAssetId: normalizeAssetIdentifier(event.target.value) })} />}</td>
                 <td className="border border-slate-300 p-2"><textarea className="min-h-12 w-full min-w-52 border border-slate-200 px-3 py-3" placeholder="例：金属くず 310kg（自動車部品）" value={row.quantityNote} onChange={(event) => updateRow(row.id, { quantityNote: event.target.value })} /></td>
                 <td className="border border-slate-300 px-2 py-4 text-center"><span className={`inline-flex px-3 py-1 text-xs font-black ${typeColor(type)}`}>{type}</span></td>
                 <td className="border border-slate-300 p-2"><button type="button" className="p-3 text-slate-400 hover:text-rose-700" onClick={() => setRows((current) => current.length === 1 ? [emptyRow()] : current.filter((item) => item.id !== row.id))} aria-label="行を削除"><Trash2 className="h-5 w-5" /></button></td>
@@ -861,8 +885,8 @@ export function ContainerManagement() {
             <label className="text-sm font-bold">コンテナ番号で検索<div className="mt-2 flex border border-slate-200 px-3"><Search className="my-auto h-5 w-5 text-slate-500" /><input className="w-full px-3 py-3 outline-none" value={containerQuery} onChange={(event) => setContainerQuery(event.target.value)} /></div></label>
           </div>
           <div className="mt-5 grid gap-4 lg:grid-cols-2">
-            {searchResults.map((item) => <article key={item.id} className="border-l-8 border-emerald-700 bg-emerald-50 p-5"><p className="font-bold text-emerald-900">{item.companyName}</p><h3 className="mt-2 text-3xl font-black">{item.assetLabel}</h3><div className="mt-4 space-y-2 text-sm font-bold text-slate-700"><p>設置日：{formatDate(item.installedOn)}</p><p>経過日数：{daysFrom(item.installedOn)}日</p><p>種類：{item.sizeLabel} {item.assetType}</p><p>現場名：{item.siteName}</p></div></article>)}
-            {basketSearchResults.map((item) => <article key={item.id} className="border-l-8 border-sky-700 bg-sky-50 p-5"><p className="font-bold text-sky-900">{item.companyName}</p><h3 className="mt-2 text-3xl font-black">カゴ {item.quantity}台</h3><div className="mt-4 space-y-2 text-sm font-bold text-slate-700"><p>種類：{item.basketType}</p><p>現場名：{item.siteName}</p></div></article>)}
+            {searchResults.map((item) => { const elapsedDays = daysFrom(item.installedOn); return <article key={item.id} className="border-l-8 border-emerald-700 bg-emerald-50 p-5"><p className="font-bold text-emerald-900">{item.companyName}</p><h3 className="mt-2 text-3xl font-black">{item.assetLabel}</h3><div className="mt-4 space-y-2 text-sm font-bold text-slate-700"><p>設置日：{formatDate(item.installedOn)}</p><p>経過日数：{elapsedDays === null ? '計算対象外' : `${elapsedDays}日`}</p><p>種類：{item.sizeLabel} {item.assetType}</p><p>現場名：{item.siteName}</p></div></article> })}
+            {basketSearchResults.map((item) => <article key={item.id} className="border-l-8 border-sky-700 bg-sky-50 p-5"><p className="font-bold text-sky-900">{item.companyName}</p><h3 className="mt-2 text-3xl font-black">{item.basketType} {item.quantity}台</h3><div className="mt-4 space-y-2 text-sm font-bold text-slate-700"><p>種類：{item.basketType}</p><p>現場名：{item.siteName}</p></div></article>)}
           </div>
         </section>
         <section className="panel rounded-none p-5"><h2 className="text-xl font-black">設置期間が長い順</h2><div className="mt-4 overflow-x-auto"><table className="w-full min-w-[620px] text-sm"><thead className="bg-slate-100"><tr>{['経過', '番号', '排出事業者名', '現場名', '設置日'].map((title) => <th key={title} className="border border-slate-200 px-3 py-3 text-left">{title}</th>)}</tr></thead><tbody>{longTerm.slice(0, 12).map((item) => <tr key={item.id}><td className="border border-slate-200 px-3 py-3 font-black text-rose-700">{item.elapsedDays}日</td><td className="border border-slate-200 px-3 py-3 font-bold">{item.assetLabel}</td><td className="border border-slate-200 px-3 py-3">{item.companyName}</td><td className="border border-slate-200 px-3 py-3">{item.siteName}</td><td className="border border-slate-200 px-3 py-3">{formatDate(item.installedOn)}</td></tr>)}</tbody></table></div></section>
@@ -934,7 +958,7 @@ export function ContainerManagement() {
               <datalist id="history-company-options">{companyOptions.map((company) => <option key={company} value={company} />)}</datalist>
             </label>
             <label className="block text-sm font-bold text-slate-700">管理年
-              <select className="mt-2 block w-full border border-slate-300 bg-white px-4 py-3" value={historyYear} onChange={(event) => { setHistoryYear(event.target.value); setHistoryRows([]) }}>{years.map((year) => <option key={year}>{year}年</option>)}</select>
+              <select className="mt-2 block w-full border border-slate-300 bg-white px-4 py-3" value={historyYear} onChange={(event) => { setHistoryYear(event.target.value); setHistoryRows([]) }}>{years.map((year) => <option key={year} value={year}>{year}年</option>)}</select>
             </label>
             <button type="button" className="inline-flex items-center justify-center gap-2 bg-emerald-800 px-5 py-3 font-black text-white" onClick={() => printSheet('collection-history')}><Printer className="h-5 w-5" />A4 PDF・印刷</button>
           </div>
@@ -949,10 +973,10 @@ export function ContainerManagement() {
             <tbody>{Array.from({ length: Math.max(18, historyRows.length) }, (_, index) => {
               const report = historyRows[index]
               const installLabel = report?.assetType === 'カゴ' && report.basketInstallCount
-                ? `カゴ×${report.basketInstallCount}`
+                ? `${report.sizeLabel || 'カゴ'}×${report.basketInstallCount}`
                 : report?.installAssetLabel?.replace('番', '') ?? ''
               const collectLabel = report?.assetType === 'カゴ' && report.basketCollectCount
-                ? `カゴ×${report.basketCollectCount}`
+                ? `${report.sizeLabel || 'カゴ'}×${report.basketCollectCount}`
                 : report?.collectAssetLabel?.replace('番', '') ?? ''
               return <tr key={report?.id ?? `empty-${index}`}><td>{report ? formatDate(report.workDate) : ''}</td><td>{report?.siteName ?? ''}</td><td>{report?.driverName ?? ''}</td><td>{installLabel}</td><td>{collectLabel}</td><td>{report?.quantity ?? ''}{report?.note && report.note !== report.quantity ? ` ${report.note}` : ''}</td></tr>
             })}</tbody>
