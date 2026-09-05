@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, Database, KeyRound, LogOut, PackageCheck, Plus, Printer, RotateCcw, Search, Trash2, Truck } from 'lucide-react'
+import { AlertTriangle, Database, KeyRound, LogOut, PackageCheck, PencilLine, Plus, Printer, RotateCcw, Search, Trash2, Truck, X } from 'lucide-react'
 import type { Session } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
 import {
@@ -30,7 +30,13 @@ type ReportRow = {
   quantityNote: string
 }
 
-type AppTab = 'daily' | 'container-ledger' | 'collection-history' | 'masters'
+type CorrectionDraft = ReportRow & {
+  reportId: string
+  workDate: string
+  driverName: string
+}
+
+type AppTab = 'daily' | 'container-ledger' | 'collection-history' | 'masters' | 'corrections'
 type PrintTarget = 'container-ledger' | 'collection-history' | null
 
 function today() {
@@ -204,8 +210,17 @@ export function ContainerManagement() {
   const [siteCode, setSiteCode] = useState('')
   const [siteName, setSiteName] = useState('')
   const [siteKana, setSiteKana] = useState('')
+  const [siteCustomerQuery, setSiteCustomerQuery] = useState('')
+  const [masterQuery, setMasterQuery] = useState('')
   const [masterMessage, setMasterMessage] = useState('')
   const [customerSort, setCustomerSort] = useState<'code' | 'kana'>('code')
+  const [correctionQuery, setCorrectionQuery] = useState('')
+  const [correctionDate, setCorrectionDate] = useState('')
+  const [correctionRows, setCorrectionRows] = useState<ContainerReport[]>([])
+  const [correctionLoading, setCorrectionLoading] = useState(false)
+  const [correctionDraft, setCorrectionDraft] = useState<CorrectionDraft | null>(null)
+  const [correctionErrors, setCorrectionErrors] = useState<string[]>([])
+  const [correctionMessage, setCorrectionMessage] = useState('')
 
   useEffect(() => {
     void supabase.auth.getSession().then(({ data }) => {
@@ -316,6 +331,22 @@ export function ContainerManagement() {
     }
     return a.customerCode.localeCompare(b.customerCode, 'ja', { numeric: true })
   }), [customerSort, customers])
+  const filteredCustomers = useMemo(() => {
+    const query = normalize(masterQuery)
+    if (!query) return sortedCustomers
+    return sortedCustomers.filter((customer) => {
+      const customerSites = sites.filter((site) => site.customerId === customer.id)
+      return [
+        customer.customerCode,
+        customer.name,
+        customer.nameKana,
+        ...customerSites.flatMap((site) => [site.siteCode, site.name, site.nameKana]),
+      ].some((value) => normalize(value).includes(query))
+    })
+  }, [masterQuery, sites, sortedCustomers])
+  const correctionCustomer = correctionDraft ? customers.find((customer) => customer.id === correctionDraft.customerId) : undefined
+  const correctionSite = correctionDraft ? sites.find((site) => site.id === correctionDraft.siteId) : undefined
+  const correctionSiteOptions = correctionDraft ? sites.filter((site) => site.customerId === correctionDraft.customerId) : []
 
   useEffect(() => {
     if (!session || !ledgerAssetQuery.trim()) return
@@ -439,6 +470,157 @@ export function ContainerManagement() {
   function updateSite(rowId: string, customerId: string, value: string) {
     const exact = sites.find((site) => site.customerId === customerId && (value === siteOption(site) || value === site.name || value === site.siteCode))
     updateRow(rowId, exact ? { siteId: exact.id, siteName: exact.name } : { siteId: '', siteName: value })
+  }
+
+  function selectSiteCustomer(value: string) {
+    setSiteCustomerQuery(value)
+    const exact = customers.find((customer) =>
+      value === customerOption(customer)
+      || value === customer.customerCode
+      || value === customer.name
+      || value === customer.nameKana,
+    )
+    setSiteCustomerId(exact?.id ?? '')
+    if (exact) setSiteCustomerQuery(customerOption(exact))
+  }
+
+  function updateCorrection(patch: Partial<CorrectionDraft>) {
+    setCorrectionDraft((current) => current ? { ...current, ...patch } : current)
+  }
+
+  function updateCorrectionCustomer(value: string) {
+    const exact = customers.find((customer) =>
+      value === customerOption(customer)
+      || value === customer.customerCode
+      || value === customer.name
+      || value === customer.nameKana,
+    )
+    updateCorrection(exact
+      ? { customerId: exact.id, companyName: exact.name, siteId: '', siteName: '' }
+      : { customerId: '', companyName: value, siteId: '', siteName: '' })
+  }
+
+  function updateCorrectionSite(customerId: string, value: string) {
+    const exact = sites.find((site) => site.customerId === customerId
+      && (value === siteOption(site) || value === site.siteCode || value === site.name || value === site.nameKana))
+    updateCorrection(exact ? { siteId: exact.id, siteName: exact.name } : { siteId: '', siteName: value })
+  }
+
+  async function loadCorrectionReports() {
+    setCorrectionLoading(true)
+    setCorrectionErrors([])
+    setCorrectionMessage('')
+    setCorrectionDraft(null)
+
+    let query = supabase.from('container_reports').select('*').not('id', 'like', 'initial-report-%')
+    if (correctionDate) query = query.eq('work_date', correctionDate)
+    const search = correctionQuery.trim().replace(/[,()%]/g, ' ')
+    if (search) {
+      query = query.or([
+        `company_name.ilike.%${search}%`,
+        `site_name.ilike.%${search}%`,
+        `driver_name.ilike.%${search}%`,
+        `install_asset_label.ilike.%${search}%`,
+        `collect_asset_label.ilike.%${search}%`,
+        `quantity.ilike.%${search}%`,
+      ].join(','))
+    }
+    const result = await query.order('work_date', { ascending: false }).order('created_at', { ascending: false }).limit(100)
+    if (result.error) {
+      setCorrectionErrors([`入力履歴を読み込めませんでした：${result.error.message}`])
+      setCorrectionRows([])
+    } else {
+      setCorrectionRows((result.data ?? []).map(reportFromRow))
+      setCorrectionMessage((result.data?.length ?? 0) === 100
+        ? '最新100件を表示しています。対象が見つからない場合は、日付または検索語で絞り込んでください。'
+        : `${result.data?.length ?? 0}件見つかりました。`)
+    }
+    setCorrectionLoading(false)
+  }
+
+  function startCorrection(report: ContainerReport) {
+    setCorrectionErrors([])
+    setCorrectionMessage('')
+    setCorrectionDraft({
+      id: `correction-${report.id}`,
+      reportId: report.id,
+      workDate: report.workDate,
+      driverName: report.driverName,
+      entryType: report.assetType === 'カゴ' ? 'basket' : 'container',
+      basketType: report.assetType === 'カゴ' ? report.sizeLabel || 'カゴ' : 'カゴ',
+      customerId: report.customerId ?? '',
+      companyName: report.companyName,
+      siteId: report.siteId ?? '',
+      siteName: report.siteName,
+      installAssetId: assetIdentifier(report.installAssetId ?? ''),
+      collectAssetId: assetIdentifier(report.collectAssetId ?? ''),
+      basketInstallCount: String(report.basketInstallCount ?? 0),
+      basketCollectCount: String(report.basketCollectCount ?? 0),
+      quantityNote: report.note ?? report.quantity ?? '',
+    })
+    window.setTimeout(() => document.getElementById('correction-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0)
+  }
+
+  async function saveCorrection(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!correctionDraft) return
+
+    const nextErrors: string[] = []
+    const install = correctionDraft.entryType === 'container' ? asset(correctionDraft.installAssetId) : undefined
+    const collect = correctionDraft.entryType === 'container' ? asset(correctionDraft.collectAssetId) : undefined
+    const basketInstall = Number(correctionDraft.basketInstallCount || 0)
+    const basketCollect = Number(correctionDraft.basketCollectCount || 0)
+    if (!correctionDraft.workDate) nextErrors.push('日付を入力してください。')
+    if (!correctionDraft.driverName.trim()) nextErrors.push('名前（ドライバー）を入力してください。')
+    if (!correctionDraft.customerId) nextErrors.push('登録済みの排出事業者を候補から選択してください。')
+    if (!correctionDraft.siteId) nextErrors.push('登録済みの現場を候補から選択してください。')
+    if (correctionDraft.entryType === 'container') {
+      if (!install && !collect && !correctionDraft.quantityNote.trim()) nextErrors.push('設置・引上げ・受託数量のいずれかを入力してください。')
+      if (install?.id === collect?.id && install) nextErrors.push('設置と引上げは別の番号にしてください。')
+    } else {
+      if (!correctionDraft.basketType.trim()) nextErrors.push('カゴ等の種類を入力してください。')
+      if (!Number.isInteger(basketInstall) || !Number.isInteger(basketCollect) || basketInstall < 0 || basketCollect < 0) {
+        nextErrors.push('設置・引上げは0以上の整数で入力してください。')
+      }
+      if (basketInstall === 0 && basketCollect === 0) nextErrors.push('設置または引上げ台数を入力してください。')
+    }
+    if (workType(correctionDraft) !== '設置' && !correctionDraft.quantityNote.trim()) nextErrors.push('受託数量・備考を入力してください。')
+    setCorrectionErrors(nextErrors)
+    setCorrectionMessage('')
+    if (nextErrors.length) return
+    if (!window.confirm('訂正内容を保存すると、現在の設置状況・管理表・収集履歴も再計算されます。保存してよろしいですか？')) return
+
+    setCorrectionLoading(true)
+    const result = await supabase.rpc('correct_container_report', {
+      p_report_id: correctionDraft.reportId,
+      p_work_date: correctionDraft.workDate,
+      p_customer_id: correctionDraft.customerId,
+      p_site_id: correctionDraft.siteId,
+      p_driver_name: correctionDraft.driverName.trim(),
+      p_install_asset_id: install?.id ?? null,
+      p_install_asset_label: install?.label ?? null,
+      p_collect_asset_id: collect?.id ?? null,
+      p_collect_asset_label: collect?.label ?? null,
+      p_quantity: correctionDraft.quantityNote.trim(),
+      p_note: correctionDraft.quantityNote.trim() || null,
+      p_basket_install_count: correctionDraft.entryType === 'basket' ? basketInstall : 0,
+      p_basket_collect_count: correctionDraft.entryType === 'basket' ? basketCollect : 0,
+      p_size_label: correctionDraft.entryType === 'basket' ? correctionDraft.basketType.trim() : '',
+    })
+    if (result.error) {
+      setCorrectionErrors([`訂正を保存できませんでした：${result.error.message}`])
+      setCorrectionLoading(false)
+      return
+    }
+
+    const response = result.data as { warnings?: string[] } | null
+    const warnings = response?.warnings ?? []
+    await Promise.all([loadFromSupabase(), loadCorrectionReports()])
+    setCorrectionDraft(null)
+    setCorrectionMessage(warnings.length
+      ? `訂正を保存しました。確認事項：${warnings.join('、')}`
+      : '訂正を保存し、現在の設置状況・管理表・収集履歴へ反映しました。')
+    setCorrectionLoading(false)
   }
 
   function buildPlan(inputRows: ReportRow[]) {
@@ -809,14 +991,15 @@ export function ContainerManagement() {
       </div>
       {showPasswordChange ? <section className="no-print panel ml-auto max-w-md rounded-none p-5"><h2 className="text-lg font-black">パスワード変更</h2><PasswordChangeForm loading={loading} error={authError} newPassword={newPassword} confirm={newPasswordConfirm} onPassword={setNewPassword} onConfirm={setNewPasswordConfirm} onSubmit={changePassword} /></section> : null}
       {authMessage ? <p className="no-print bg-emerald-50 p-3 text-sm font-bold text-emerald-800">{authMessage}</p> : null}
-      <nav className="no-print panel grid rounded-none p-2 sm:grid-cols-4" aria-label="管理メニュー">
+      <nav className="no-print panel grid rounded-none p-2 md:grid-cols-5" aria-label="管理メニュー">
         {([
           ['daily', '日報入力・設置状況'],
           ['container-ledger', 'コンテナ管理表'],
           ['collection-history', '収集履歴'],
           ['masters', '排出事業者・現場登録'],
+          ['corrections', '入力履歴・訂正'],
         ] as const).map(([tab, label]) => (
-          <button key={tab} type="button" onClick={() => setActiveTab(tab)} className={`px-4 py-4 text-sm font-black transition ${activeTab === tab ? 'bg-emerald-800 text-white' : 'bg-white text-slate-700 hover:bg-emerald-50'}`}>
+          <button key={tab} type="button" onClick={() => { setActiveTab(tab); if (tab === 'corrections' && !correctionRows.length) void loadCorrectionReports() }} className={`px-4 py-4 text-sm font-black transition ${activeTab === tab ? 'bg-emerald-800 text-white' : 'bg-white text-slate-700 hover:bg-emerald-50'}`}>
             {label}
           </button>
         ))}
@@ -933,7 +1116,10 @@ export function ContainerManagement() {
           <form className="panel rounded-none p-5" onSubmit={addSite}>
             <h3 className="text-lg font-black">現場を登録</h3>
             <div className="mt-4 grid gap-4">
-              <label className="text-sm font-bold">排出事業者<select className="mt-2 w-full border border-slate-300 bg-white px-4 py-3" required value={siteCustomerId} onChange={(event) => setSiteCustomerId(event.target.value)}><option value="">選択してください</option>{customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.customerCode}｜{customer.name}</option>)}</select></label>
+              <label className="text-sm font-bold">排出事業者
+                <input className="mt-2 w-full border border-slate-300 bg-white px-4 py-3" list="site-customer-options" required placeholder="顧客番号・名称・カナで検索" value={siteCustomerQuery} onChange={(event) => selectSiteCustomer(event.target.value)} />
+                <datalist id="site-customer-options">{customers.map((customer) => <option key={customer.id} value={customerOption(customer)} />)}</datalist>
+              </label>
               <label className="text-sm font-bold">現場番号<input className="mt-2 w-full border border-slate-300 px-4 py-3" required placeholder="例：S001" value={siteCode} onChange={(event) => setSiteCode(event.target.value)} /></label>
               <label className="text-sm font-bold">現場名<input className="mt-2 w-full border border-slate-300 px-4 py-3" required placeholder="例：本社工場" value={siteName} onChange={(event) => setSiteName(event.target.value)} /></label>
               <label className="text-sm font-bold">カナ<input className="mt-2 w-full border border-slate-300 px-4 py-3" placeholder="例：ホンシャコウジョウ" value={siteKana} onChange={(event) => setSiteKana(event.target.value)} /></label>
@@ -944,16 +1130,85 @@ export function ContainerManagement() {
         {errors.length ? <div className="border-l-8 border-rose-700 bg-rose-50 p-4 text-sm font-bold leading-7 text-rose-900">{errors.map((error) => <p key={error}>{error}</p>)}</div> : null}
         {masterMessage ? <p className="bg-sky-50 px-4 py-3 text-sm font-bold text-sky-800">{masterMessage}</p> : null}
         <section className="panel rounded-none p-5">
-          <div className="flex flex-wrap items-end justify-between gap-3">
-            <div><h3 className="text-lg font-black">登録済み一覧</h3><p className="mt-2 text-sm text-slate-600">排出事業者 {customers.length}件／現場 {sites.length}件</p></div>
-            <label className="text-sm font-bold text-slate-700">並び順
-              <select className="mt-2 block min-w-44 border border-slate-300 bg-white px-4 py-3" value={customerSort} onChange={(event) => setCustomerSort(event.target.value as 'code' | 'kana')}>
-                <option value="code">顧客番号順</option>
-                <option value="kana">カナ順</option>
-              </select>
+          <div className="flex flex-wrap items-end justify-between gap-4">
+            <div><h3 className="text-lg font-black">登録済み一覧</h3><p className="mt-2 text-sm text-slate-600">排出事業者 {customers.length}件／現場 {sites.length}件（表示 {filteredCustomers.length}件）</p></div>
+            <div className="flex flex-wrap items-end gap-3">
+              <label className="text-sm font-bold text-slate-700">一覧を検索
+                <span className="mt-2 flex min-w-72 border border-slate-300 bg-white px-3"><Search className="my-auto h-5 w-5 text-slate-500" /><input className="w-full px-3 py-3 outline-none" placeholder="番号・名称・カナ・現場名" value={masterQuery} onChange={(event) => setMasterQuery(event.target.value)} /></span>
+              </label>
+              <label className="text-sm font-bold text-slate-700">並び順
+                <select className="mt-2 block min-w-44 border border-slate-300 bg-white px-4 py-3" value={customerSort} onChange={(event) => setCustomerSort(event.target.value as 'code' | 'kana')}>
+                  <option value="code">顧客番号順</option>
+                  <option value="kana">カナ順</option>
+                </select>
+              </label>
+            </div>
+          </div>
+          <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[760px] text-sm"><thead className="bg-slate-100"><tr>{['顧客番号', '排出事業者名', 'カナ', '登録済み現場'].map((title) => <th key={title} className="border border-slate-200 px-3 py-3 text-left">{title}</th>)}</tr></thead><tbody>{filteredCustomers.map((customer) => <tr key={customer.id}><td className="border border-slate-200 px-3 py-3 font-bold">{customer.customerCode}</td><td className="border border-slate-200 px-3 py-3">{customer.name}</td><td className="border border-slate-200 px-3 py-3">{customer.nameKana}</td><td className="border border-slate-200 px-3 py-3">{sites.filter((site) => site.customerId === customer.id).map((site) => `${site.siteCode} ${site.name}${site.nameKana ? `（${site.nameKana}）` : ''}`).join('、') || '未登録'}</td></tr>)}</tbody></table></div>
+          {!filteredCustomers.length ? <p className="mt-4 bg-slate-50 px-4 py-5 text-center text-sm font-bold text-slate-600">該当する排出事業者・現場はありません。</p> : null}
+        </section>
+      </section> : null}
+
+      {activeTab === 'corrections' ? <section className="space-y-6">
+        <section className="panel rounded-none p-5">
+          <div className="flex items-start gap-3"><PencilLine className="h-8 w-8 text-emerald-800" /><div><h2 className="text-xl font-black">入力履歴・訂正</h2><p className="mt-2 text-sm leading-6 text-slate-600">運用開始後に登録した日報を検索して訂正できます。保存すると、現在の設置状況・コンテナ管理表・収集履歴も自動で再計算されます。</p></div></div>
+          <form className="mt-5 grid gap-4 md:grid-cols-[190px_1fr_auto] md:items-end" onSubmit={(event) => { event.preventDefault(); void loadCorrectionReports() }}>
+            <label className="text-sm font-bold text-slate-700">日付
+              <input type="date" className="mt-2 block w-full border border-slate-300 bg-white px-4 py-3" value={correctionDate} onChange={(event) => setCorrectionDate(event.target.value)} />
+            </label>
+            <label className="text-sm font-bold text-slate-700">検索語
+              <span className="mt-2 flex border border-slate-300 bg-white px-3"><Search className="my-auto h-5 w-5 text-slate-500" /><input className="w-full px-3 py-3 outline-none" placeholder="排出事業者・現場・ドライバー・コンテナ番号" value={correctionQuery} onChange={(event) => setCorrectionQuery(event.target.value)} /></span>
+            </label>
+            <button type="submit" disabled={correctionLoading} className="bg-emerald-800 px-6 py-3 font-black text-white disabled:opacity-50">{correctionLoading ? '検索中…' : '履歴を検索'}</button>
+          </form>
+          <p className="mt-3 text-xs leading-6 text-slate-500">初期登録データは保護対象のため、この画面には表示されません。条件なしの場合は最新100件を表示します。</p>
+        </section>
+
+        {correctionErrors.length ? <div className="border-l-8 border-rose-700 bg-rose-50 p-4 text-sm font-bold leading-7 text-rose-900">{correctionErrors.map((error) => <p key={error}>{error}</p>)}</div> : null}
+        {correctionMessage ? <p className="bg-sky-50 px-4 py-3 text-sm font-bold text-sky-800">{correctionMessage}</p> : null}
+
+        {correctionDraft ? <form id="correction-form" className="panel scroll-mt-5 rounded-none p-5" onSubmit={saveCorrection}>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div><h3 className="text-lg font-black">選択した入力を訂正</h3><p className="mt-2 text-sm text-slate-600">登録番号：{correctionDraft.reportId}</p></div>
+            <button type="button" className="inline-flex items-center gap-2 border border-slate-300 px-4 py-2 text-sm font-bold" onClick={() => setCorrectionDraft(null)}><X className="h-4 w-4" />閉じる</button>
+          </div>
+          <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <label className="text-sm font-bold">日付<input type="date" required className="mt-2 w-full border border-slate-300 px-4 py-3" value={correctionDraft.workDate} onChange={(event) => updateCorrection({ workDate: event.target.value })} /></label>
+            <label className="text-sm font-bold">名前（ドライバー）<input required className="mt-2 w-full border border-slate-300 px-4 py-3" value={correctionDraft.driverName} onChange={(event) => updateCorrection({ driverName: event.target.value })} /></label>
+            <label className="text-sm font-bold">排出事業者
+              <input required className="mt-2 w-full border border-slate-300 px-4 py-3" list="correction-customer-options" placeholder="番号・名称・カナで検索" value={correctionCustomer ? customerOption(correctionCustomer) : correctionDraft.companyName} onChange={(event) => updateCorrectionCustomer(event.target.value)} />
+              <datalist id="correction-customer-options">{customers.map((customer) => <option key={customer.id} value={customerOption(customer)} />)}</datalist>
+            </label>
+            <label className="text-sm font-bold">現場
+              <input required className="mt-2 w-full border border-slate-300 px-4 py-3" list="correction-site-options" placeholder={correctionDraft.customerId ? '番号・名称・カナで検索' : '先に排出事業者を選択'} value={correctionSite ? siteOption(correctionSite) : correctionDraft.siteName} onChange={(event) => updateCorrectionSite(correctionDraft.customerId, event.target.value)} />
+              <datalist id="correction-site-options">{correctionSiteOptions.map((site) => <option key={site.id} value={siteOption(site)} />)}</datalist>
             </label>
           </div>
-          <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[760px] text-sm"><thead className="bg-slate-100"><tr>{['顧客番号', '排出事業者名', 'カナ', '登録済み現場'].map((title) => <th key={title} className="border border-slate-200 px-3 py-3 text-left">{title}</th>)}</tr></thead><tbody>{sortedCustomers.map((customer) => <tr key={customer.id}><td className="border border-slate-200 px-3 py-3 font-bold">{customer.customerCode}</td><td className="border border-slate-200 px-3 py-3">{customer.name}</td><td className="border border-slate-200 px-3 py-3">{customer.nameKana}</td><td className="border border-slate-200 px-3 py-3">{sites.filter((site) => site.customerId === customer.id).map((site) => `${site.siteCode} ${site.name}`).join('、') || '未登録'}</td></tr>)}</tbody></table></div>
+          <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            {correctionDraft.entryType === 'basket' ? <>
+              <label className="text-sm font-bold">種類<input required className="mt-2 w-full border border-slate-300 px-4 py-3" value={correctionDraft.basketType} onChange={(event) => updateCorrection({ basketType: event.target.value })} /></label>
+              <label className="text-sm font-bold">設置台数<input type="number" min="0" step="1" inputMode="numeric" className="mt-2 w-full border border-slate-300 px-4 py-3" value={correctionDraft.basketInstallCount} onChange={(event) => updateCorrection({ basketInstallCount: event.target.value })} /></label>
+              <label className="text-sm font-bold">引上げ台数<input type="number" min="0" step="1" inputMode="numeric" className="mt-2 w-full border border-slate-300 px-4 py-3" value={correctionDraft.basketCollectCount} onChange={(event) => updateCorrection({ basketCollectCount: event.target.value })} /></label>
+            </> : <>
+              <label className="text-sm font-bold">設置<input autoCapitalize="characters" className="mt-2 w-full border border-slate-300 px-4 py-3" placeholder="例：203" value={assetIdentifier(correctionDraft.installAssetId)} onChange={(event) => updateCorrection({ installAssetId: normalizeAssetIdentifier(event.target.value) })} /></label>
+              <label className="text-sm font-bold">引上げ<input autoCapitalize="characters" className="mt-2 w-full border border-slate-300 px-4 py-3" placeholder="例：208" value={assetIdentifier(correctionDraft.collectAssetId)} onChange={(event) => updateCorrection({ collectAssetId: normalizeAssetIdentifier(event.target.value) })} /></label>
+            </>}
+            <label className={`text-sm font-bold ${correctionDraft.entryType === 'container' ? 'md:col-span-2' : ''}`}>受託数量・備考<textarea className="mt-2 min-h-12 w-full border border-slate-300 px-4 py-3" value={correctionDraft.quantityNote} onChange={(event) => updateCorrection({ quantityNote: event.target.value })} /></label>
+          </div>
+          <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-5">
+            <p className="text-sm font-bold text-slate-700">訂正後の自動判定：<span className={`ml-2 inline-flex px-3 py-1 text-xs font-black ${typeColor(workType(correctionDraft))}`}>{workType(correctionDraft)}</span></p>
+            <button type="submit" disabled={correctionLoading} className="inline-flex items-center gap-2 bg-emerald-800 px-6 py-3 font-black text-white disabled:opacity-50"><PencilLine className="h-5 w-5" />{correctionLoading ? '再計算中…' : '訂正を保存して再計算'}</button>
+          </div>
+        </form> : null}
+
+        <section className="panel rounded-none p-5">
+          <div className="flex flex-wrap items-end justify-between gap-3"><div><h3 className="text-lg font-black">運用開始後の入力履歴</h3><p className="mt-2 text-sm text-slate-600">表示 {correctionRows.length}件</p></div></div>
+          <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[1050px] text-sm"><thead className="bg-slate-100"><tr>{['日付', '排出事業者', '現場', 'ドライバー', '設置', '引上げ', '受託数量・備考', ''].map((title) => <th key={title} className="border border-slate-200 px-3 py-3 text-left">{title}</th>)}</tr></thead><tbody>{correctionRows.map((report) => {
+            const installLabel = report.assetType === 'カゴ' ? `${report.sizeLabel}×${report.basketInstallCount ?? 0}` : report.installAssetLabel ?? ''
+            const collectLabel = report.assetType === 'カゴ' ? `${report.sizeLabel}×${report.basketCollectCount ?? 0}` : report.collectAssetLabel ?? ''
+            return <tr key={report.id}><td className="border border-slate-200 px-3 py-3 font-bold">{formatDate(report.workDate)}</td><td className="border border-slate-200 px-3 py-3">{report.companyName}</td><td className="border border-slate-200 px-3 py-3">{report.siteName}</td><td className="border border-slate-200 px-3 py-3">{report.driverName}</td><td className="border border-slate-200 px-3 py-3">{installLabel}</td><td className="border border-slate-200 px-3 py-3">{collectLabel}</td><td className="border border-slate-200 px-3 py-3">{report.note ?? report.quantity}</td><td className="border border-slate-200 px-3 py-3"><button type="button" className="inline-flex items-center gap-2 border border-emerald-700 px-3 py-2 font-black text-emerald-800" onClick={() => startCorrection(report)}><PencilLine className="h-4 w-4" />訂正</button></td></tr>
+          })}</tbody></table></div>
+          {!correctionLoading && !correctionRows.length ? <p className="mt-4 bg-slate-50 px-4 py-5 text-center text-sm font-bold text-slate-600">該当する入力履歴はありません。</p> : null}
         </section>
       </section> : null}
 
