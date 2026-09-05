@@ -380,10 +380,20 @@ export function ContainerManagement() {
   }, [historyCompany, historyYear, session])
 
   function printSheet(target: Exclude<PrintTarget, null>) {
+    document.getElementById('print-page-orientation')?.remove()
+    const pageStyle = document.createElement('style')
+    pageStyle.id = 'print-page-orientation'
+    pageStyle.textContent = `@media print { @page { size: A4 ${target === 'collection-history' ? 'landscape' : 'portrait'}; margin: 0; } }`
+    document.head.appendChild(pageStyle)
+
     setPrintTarget(target)
+    const cleanup = () => {
+      pageStyle.remove()
+      setPrintTarget(null)
+    }
+    window.addEventListener('afterprint', cleanup, { once: true })
     window.setTimeout(() => {
       window.print()
-      setPrintTarget(null)
     }, 80)
   }
 
