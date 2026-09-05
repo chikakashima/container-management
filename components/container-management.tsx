@@ -205,6 +205,7 @@ export function ContainerManagement() {
   const [siteName, setSiteName] = useState('')
   const [siteKana, setSiteKana] = useState('')
   const [masterMessage, setMasterMessage] = useState('')
+  const [customerSort, setCustomerSort] = useState<'code' | 'kana'>('code')
 
   useEffect(() => {
     void supabase.auth.getSession().then(({ data }) => {
@@ -304,6 +305,17 @@ export function ContainerManagement() {
   }, [basketBalances, companyQuery, containerQuery, customers])
   const years = useMemo(() => Array.from({ length: 11 }, (_, index) => String(new Date().getFullYear() + 1 - index)), [])
   const selectedAsset = asset(ledgerAssetId)
+  const sortedCustomers = useMemo(() => [...customers].sort((a, b) => {
+    if (customerSort === 'kana') {
+      const aKana = a.nameKana.trim()
+      const bKana = b.nameKana.trim()
+      if (!aKana && bKana) return 1
+      if (aKana && !bKana) return -1
+      const kanaOrder = aKana.localeCompare(bKana, 'ja')
+      if (kanaOrder !== 0) return kanaOrder
+    }
+    return a.customerCode.localeCompare(b.customerCode, 'ja', { numeric: true })
+  }), [customerSort, customers])
 
   useEffect(() => {
     if (!session || !ledgerAssetQuery.trim()) return
@@ -932,8 +944,16 @@ export function ContainerManagement() {
         {errors.length ? <div className="border-l-8 border-rose-700 bg-rose-50 p-4 text-sm font-bold leading-7 text-rose-900">{errors.map((error) => <p key={error}>{error}</p>)}</div> : null}
         {masterMessage ? <p className="bg-sky-50 px-4 py-3 text-sm font-bold text-sky-800">{masterMessage}</p> : null}
         <section className="panel rounded-none p-5">
-          <div className="flex flex-wrap items-end justify-between gap-3"><div><h3 className="text-lg font-black">登録済み一覧</h3><p className="mt-2 text-sm text-slate-600">排出事業者 {customers.length}件／現場 {sites.length}件</p></div></div>
-          <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[760px] text-sm"><thead className="bg-slate-100"><tr>{['顧客番号', '排出事業者名', 'カナ', '登録済み現場'].map((title) => <th key={title} className="border border-slate-200 px-3 py-3 text-left">{title}</th>)}</tr></thead><tbody>{customers.map((customer) => <tr key={customer.id}><td className="border border-slate-200 px-3 py-3 font-bold">{customer.customerCode}</td><td className="border border-slate-200 px-3 py-3">{customer.name}</td><td className="border border-slate-200 px-3 py-3">{customer.nameKana}</td><td className="border border-slate-200 px-3 py-3">{sites.filter((site) => site.customerId === customer.id).map((site) => `${site.siteCode} ${site.name}`).join('、') || '未登録'}</td></tr>)}</tbody></table></div>
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div><h3 className="text-lg font-black">登録済み一覧</h3><p className="mt-2 text-sm text-slate-600">排出事業者 {customers.length}件／現場 {sites.length}件</p></div>
+            <label className="text-sm font-bold text-slate-700">並び順
+              <select className="mt-2 block min-w-44 border border-slate-300 bg-white px-4 py-3" value={customerSort} onChange={(event) => setCustomerSort(event.target.value as 'code' | 'kana')}>
+                <option value="code">顧客番号順</option>
+                <option value="kana">カナ順</option>
+              </select>
+            </label>
+          </div>
+          <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[760px] text-sm"><thead className="bg-slate-100"><tr>{['顧客番号', '排出事業者名', 'カナ', '登録済み現場'].map((title) => <th key={title} className="border border-slate-200 px-3 py-3 text-left">{title}</th>)}</tr></thead><tbody>{sortedCustomers.map((customer) => <tr key={customer.id}><td className="border border-slate-200 px-3 py-3 font-bold">{customer.customerCode}</td><td className="border border-slate-200 px-3 py-3">{customer.name}</td><td className="border border-slate-200 px-3 py-3">{customer.nameKana}</td><td className="border border-slate-200 px-3 py-3">{sites.filter((site) => site.customerId === customer.id).map((site) => `${site.siteCode} ${site.name}`).join('、') || '未登録'}</td></tr>)}</tbody></table></div>
         </section>
       </section> : null}
 
