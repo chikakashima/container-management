@@ -383,7 +383,7 @@ export function ContainerManagement() {
     document.getElementById('print-page-orientation')?.remove()
     const pageStyle = document.createElement('style')
     pageStyle.id = 'print-page-orientation'
-    pageStyle.textContent = `@media print { @page { size: A4 ${target === 'collection-history' ? 'landscape' : 'portrait'}; margin: 0; } }`
+    pageStyle.textContent = '@media print { @page { size: A4 portrait; margin: 0; } }'
     document.head.appendChild(pageStyle)
 
     setPrintTarget(target)
@@ -975,7 +975,7 @@ export function ContainerManagement() {
           <p className="mt-3 text-sm text-slate-600">排出事業者名と年を選ぶと、1年分の収集履歴を紙と同じ形式で保存できます。</p>
         </div>
         {sheetLoading ? <p className="no-print text-sm font-bold text-emerald-800">帳票データを読み込み中です…</p> : null}
-        <div className={`paper-sheet paper-landscape ${printTarget === 'collection-history' ? 'print-target' : ''}`}>
+        <div className={`paper-sheet paper-portrait ${printTarget === 'collection-history' ? 'print-target' : ''}`}>
           <div className="collection-heading"><div><span>排出事業者名</span><strong>{historyCompany}</strong></div><h2>収集履歴</h2><p>{historyYear}年</p></div>
           <table className="paper-table collection-table">
             <colgroup><col style={{ width: '13%' }} /><col style={{ width: '23%' }} /><col style={{ width: '12%' }} /><col style={{ width: '8%' }} /><col style={{ width: '8%' }} /><col style={{ width: '36%' }} /></colgroup>
