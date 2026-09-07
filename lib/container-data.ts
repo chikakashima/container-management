@@ -1,4 +1,6 @@
-export type ContainerAssetType = 'コンテナ' | 'カゴ'
+export type QuantityAssetType = 'カゴ' | '貸出備品'
+
+export type ContainerAssetType = 'コンテナ' | QuantityAssetType
 
 export type ContainerWorkType = '設置' | '回収' | '交換' | '手積み'
 
@@ -53,6 +55,7 @@ export type CustomerMaster = {
   customerCode: string
   name: string
   nameKana: string
+  previousName: string
 }
 
 export type SiteMaster = {
@@ -69,8 +72,20 @@ export type BasketBalance = {
   siteId: string
   companyName: string
   siteName: string
+  itemCategory: QuantityAssetType
   basketType: string
   quantity: number
+}
+
+export type DriverMaster = {
+  id: string
+  name: string
+}
+
+export type QuantityItemMaster = {
+  id: string
+  category: QuantityAssetType
+  name: string
 }
 
 export type LongTermThreshold = {

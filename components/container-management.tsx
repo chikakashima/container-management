@@ -1,7 +1,7 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, Database, KeyRound, LogOut, PackageCheck, PencilLine, Plus, Printer, RotateCcw, Search, Trash2, Truck, X } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { AlertTriangle, ChevronDown, ChevronUp, Database, KeyRound, LogOut, PackageCheck, PencilLine, Plus, Printer, RotateCcw, Search, Trash2, Truck, X } from 'lucide-react'
 import type { Session } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
 import {
@@ -12,12 +12,16 @@ import {
   type LongTermThreshold,
   type BasketBalance,
   type CustomerMaster,
+  type DriverMaster,
+  type QuantityAssetType,
+  type QuantityItemMaster,
   type SiteMaster,
 } from '@/lib/container-data'
+import { buildQuantityLedgerRows, type LedgerLifecycleRow } from '@/lib/container-ledger'
 
 type ReportRow = {
   id: string
-  entryType: 'container' | 'basket'
+  entryType: 'container' | 'basket' | 'equipment'
   basketType: string
   customerId: string
   companyName: string
@@ -38,6 +42,18 @@ type CorrectionDraft = ReportRow & {
 
 type AppTab = 'daily' | 'container-ledger' | 'collection-history' | 'masters' | 'corrections'
 type PrintTarget = 'container-ledger' | 'collection-history' | null
+
+type LedgerOption = {
+  id: string
+  label: string
+  kind: 'container' | 'quantity'
+  category?: QuantityAssetType
+  itemType?: string
+  sizeLabel?: string
+}
+
+type CustomerEditDraft = Pick<CustomerMaster, 'id' | 'customerCode' | 'name' | 'nameKana' | 'previousName'>
+type SiteEditDraft = Pick<SiteMaster, 'id' | 'siteCode' | 'name' | 'nameKana'>
 
 function today() {
   const date = new Date()
@@ -61,6 +77,39 @@ function normalize(value: string) {
   return value.trim().toLowerCase().replace(/[\s　]/g, '')
 }
 
+function compareCodes(a: string, b: string) {
+  return a.localeCompare(b, 'ja', { numeric: true, sensitivity: 'base' })
+}
+
+function isQuantityEntry(row: ReportRow) {
+  return row.entryType === 'basket' || row.entryType === 'equipment'
+}
+
+function quantityCategory(row: ReportRow): QuantityAssetType {
+  return row.entryType === 'equipment' ? '貸出備品' : 'カゴ'
+}
+
+function isQuantityAssetType(value: ContainerReport['assetType']): value is QuantityAssetType {
+  return value === 'カゴ' || value === '貸出備品'
+}
+
+function customerDisplayName(customer: CustomerMaster) {
+  return customer.previousName
+    ? `${customer.name}（旧社名：${customer.previousName}）`
+    : customer.name
+}
+
+function toKatakana(value: string) {
+  return value.normalize('NFKC').replace(/[ぁ-ゖ]/g, (character) =>
+    String.fromCharCode(character.charCodeAt(0) + 0x60),
+  )
+}
+
+function kanaCandidate(value: string) {
+  const normalized = value.normalize('NFKC')
+  return /^[ぁ-ゖァ-ヶー\s　]+$/u.test(normalized) ? toKatakana(normalized) : ''
+}
+
 function emptyRow(id = `row-${Date.now()}-${Math.random()}`): ReportRow {
   return {
     id, entryType: 'container', basketType: 'カゴ', customerId: '', companyName: '', siteId: '', siteName: '',
@@ -73,7 +122,7 @@ function defaultRows(): ReportRow[] {
 }
 
 function workType(row: ReportRow): ContainerWorkType {
-  if (row.entryType === 'basket') {
+  if (isQuantityEntry(row)) {
     if (Number(row.basketInstallCount) > 0 && Number(row.basketCollectCount) > 0) return '交換'
     if (Number(row.basketInstallCount) > 0) return '設置'
     if (Number(row.basketCollectCount) > 0) return '回収'
@@ -90,7 +139,7 @@ function hasContent(row: ReportRow) {
 }
 
 function customerOption(customer: CustomerMaster) {
-  return `${customer.customerCode}｜${customer.name}${customer.nameKana ? `｜${customer.nameKana}` : ''}`
+  return [customer.customerCode, customerDisplayName(customer), customer.nameKana].filter(Boolean).join('｜')
 }
 
 function siteOption(site: SiteMaster) {
@@ -137,7 +186,7 @@ function reportFromRow(item: Record<string, unknown>): ContainerReport {
     collectAssetId: item.collect_asset_id ? String(item.collect_asset_id) : undefined,
     collectAssetLabel: item.collect_asset_label ? String(item.collect_asset_label) : undefined,
     assetType: item.asset_type as ContainerReport['assetType'], sizeLabel: String(item.size_label),
-    quantity: String(item.quantity), note: item.note ? String(item.note) : undefined,
+    quantity: item.quantity == null ? '' : String(item.quantity), note: item.note ? String(item.note) : undefined,
     customerId: item.customer_id ? String(item.customer_id) : undefined,
     siteId: item.site_id ? String(item.site_id) : undefined,
     basketInstallCount: Number(item.basket_install_count ?? 0),
@@ -192,16 +241,19 @@ export function ContainerManagement() {
   const [ledgerAssetId, setLedgerAssetId] = useState('')
   const [ledgerAssetQuery, setLedgerAssetQuery] = useState('')
   const [historyCompany, setHistoryCompany] = useState('')
+  const [historyCustomerId, setHistoryCustomerId] = useState('')
   const [historyYear, setHistoryYear] = useState(String(new Date().getFullYear()))
   const [printTarget, setPrintTarget] = useState<PrintTarget>(null)
-  const [companyOptions, setCompanyOptions] = useState<string[]>([])
-  const [assetOptions, setAssetOptions] = useState<Array<{ id: string; label: string; assetType: 'コンテナ' | 'カゴ'; sizeLabel: string }>>([])
-  const [ledgerRows, setLedgerRows] = useState<ContainerReport[]>([])
+  const [companyOptions, setCompanyOptions] = useState<CustomerMaster[]>([])
+  const [assetOptions, setAssetOptions] = useState<LedgerOption[]>([])
+  const [ledgerRows, setLedgerRows] = useState<LedgerLifecycleRow[]>([])
   const [historyRows, setHistoryRows] = useState<ContainerReport[]>([])
   const [sheetLoading, setSheetLoading] = useState(false)
   const [customers, setCustomers] = useState<CustomerMaster[]>([])
   const [sites, setSites] = useState<SiteMaster[]>([])
   const [basketBalances, setBasketBalances] = useState<BasketBalance[]>([])
+  const [drivers, setDrivers] = useState<DriverMaster[]>([])
+  const [itemTypes, setItemTypes] = useState<QuantityItemMaster[]>([])
   const [masterReady, setMasterReady] = useState(true)
   const [customerCode, setCustomerCode] = useState('')
   const [customerName, setCustomerName] = useState('')
@@ -211,9 +263,15 @@ export function ContainerManagement() {
   const [siteName, setSiteName] = useState('')
   const [siteKana, setSiteKana] = useState('')
   const [siteCustomerQuery, setSiteCustomerQuery] = useState('')
+  const [driverMasterName, setDriverMasterName] = useState('')
+  const [itemCategory, setItemCategory] = useState<QuantityAssetType>('カゴ')
+  const [itemTypeName, setItemTypeName] = useState('')
   const [masterQuery, setMasterQuery] = useState('')
   const [masterMessage, setMasterMessage] = useState('')
   const [customerSort, setCustomerSort] = useState<'code' | 'kana'>('code')
+  const [expandedCustomerIds, setExpandedCustomerIds] = useState<Set<string>>(() => new Set())
+  const [customerEdit, setCustomerEdit] = useState<CustomerEditDraft | null>(null)
+  const [siteEdit, setSiteEdit] = useState<SiteEditDraft | null>(null)
   const [correctionQuery, setCorrectionQuery] = useState('')
   const [correctionDate, setCorrectionDate] = useState('')
   const [correctionRows, setCorrectionRows] = useState<ContainerReport[]>([])
@@ -221,6 +279,8 @@ export function ContainerManagement() {
   const [correctionDraft, setCorrectionDraft] = useState<CorrectionDraft | null>(null)
   const [correctionErrors, setCorrectionErrors] = useState<string[]>([])
   const [correctionMessage, setCorrectionMessage] = useState('')
+  const customerKanaBeforeComposition = useRef('')
+  const siteKanaBeforeComposition = useRef('')
 
   useEffect(() => {
     void supabase.auth.getSession().then(({ data }) => {
@@ -263,7 +323,7 @@ export function ContainerManagement() {
       })))
       if ((result.data?.length ?? 0) < PAGE_SIZE) break
     }
-    async function loadPages(table: 'container_customers' | 'container_sites' | 'basket_balances', columns: string) {
+    async function loadPages(table: 'container_customers' | 'container_sites' | 'basket_balances' | 'container_drivers' | 'container_item_types', columns: string) {
       const data: Array<Record<string, unknown>> = []
       for (let from = 0; ; from += PAGE_SIZE) {
         let query = supabase.from(table).select(columns)
@@ -275,17 +335,21 @@ export function ContainerManagement() {
       }
       return { data, error: null }
     }
-    const [customersResult, sitesResult, basketResult] = await Promise.all([
-      loadPages('container_customers', 'id,customer_code,name,name_kana'),
+    const [customersResult, sitesResult, basketResult, driversResult, itemTypesResult] = await Promise.all([
+      loadPages('container_customers', 'id,customer_code,name,name_kana,previous_name'),
       loadPages('container_sites', 'id,customer_id,site_code,name,name_kana'),
-      loadPages('basket_balances', 'id,customer_id,site_id,company_name,site_name,basket_type,quantity'),
+      loadPages('basket_balances', 'id,customer_id,site_id,company_name,site_name,item_category,basket_type,quantity'),
+      loadPages('container_drivers', 'id,name'),
+      loadPages('container_item_types', 'id,category,name'),
     ])
-    const mastersAvailable = !customersResult.error && !sitesResult.error && !basketResult.error
+    const mastersAvailable = !customersResult.error && !sitesResult.error && !basketResult.error && !driversResult.error && !itemTypesResult.error
     setMasterReady(mastersAvailable)
     if (mastersAvailable) {
-      setCustomers(customersResult.data.map((item) => ({ id: String(item.id), customerCode: String(item.customer_code), name: String(item.name), nameKana: String(item.name_kana) })))
+      setCustomers(customersResult.data.map((item) => ({ id: String(item.id), customerCode: String(item.customer_code), name: String(item.name), nameKana: String(item.name_kana), previousName: String(item.previous_name ?? '') })))
       setSites(sitesResult.data.map((item) => ({ id: String(item.id), customerId: String(item.customer_id), siteCode: String(item.site_code), name: String(item.name), nameKana: String(item.name_kana) })))
-      setBasketBalances(basketResult.data.map((item) => ({ id: String(item.id), customerId: String(item.customer_id), siteId: String(item.site_id), companyName: String(item.company_name), siteName: String(item.site_name), basketType: String(item.basket_type), quantity: Number(item.quantity) })))
+      setBasketBalances(basketResult.data.map((item) => ({ id: String(item.id), customerId: String(item.customer_id), siteId: String(item.site_id), companyName: String(item.company_name), siteName: String(item.site_name), itemCategory: item.item_category as QuantityAssetType, basketType: String(item.basket_type), quantity: Number(item.quantity) })))
+      setDrivers(driversResult.data.map((item) => ({ id: String(item.id), name: String(item.name) })).sort((a, b) => a.name.localeCompare(b.name, 'ja')))
+      setItemTypes(itemTypesResult.data.map((item) => ({ id: String(item.id), category: item.category as QuantityAssetType, name: String(item.name) })).sort((a, b) => a.name.localeCompare(b.name, 'ja', { numeric: true })))
     }
     setStored({ assignments, reports: [], thresholds: longTermThresholds })
     setLoading(false)
@@ -319,7 +383,17 @@ export function ContainerManagement() {
     })
   }, [basketBalances, companyQuery, containerQuery, customers])
   const years = useMemo(() => Array.from({ length: 11 }, (_, index) => String(new Date().getFullYear() + 1 - index)), [])
-  const selectedAsset = asset(ledgerAssetId)
+  const customersByCode = useMemo(() => [...customers].sort((a, b) => compareCodes(a.customerCode, b.customerCode)), [customers])
+  const sitesByCode = useMemo(() => [...sites].sort((a, b) => compareCodes(a.siteCode, b.siteCode)), [sites])
+  const selectedLedgerOption = useMemo(() => {
+    const loaded = assetOptions.find((item) => item.id === ledgerAssetId)
+    if (loaded) return loaded
+    if (ledgerAssetId.startsWith('container-')) {
+      const selected = asset(ledgerAssetId)
+      return selected ? { id: selected.id, label: selected.label, kind: 'container' as const, sizeLabel: selected.sizeLabel } : undefined
+    }
+    return undefined
+  }, [assetOptions, ledgerAssetId])
   const sortedCustomers = useMemo(() => [...customers].sort((a, b) => {
     if (customerSort === 'kana') {
       const aKana = a.nameKana.trim()
@@ -346,7 +420,16 @@ export function ContainerManagement() {
   }, [masterQuery, sites, sortedCustomers])
   const correctionCustomer = correctionDraft ? customers.find((customer) => customer.id === correctionDraft.customerId) : undefined
   const correctionSite = correctionDraft ? sites.find((site) => site.id === correctionDraft.siteId) : undefined
-  const correctionSiteOptions = correctionDraft ? sites.filter((site) => site.customerId === correctionDraft.customerId) : []
+  const correctionSiteOptions = correctionDraft ? sitesByCode.filter((site) => site.customerId === correctionDraft.customerId) : []
+  const historyHeadingCompany = historyRows.at(-1)?.companyName ?? historyCompany
+
+  const quantityLedgerOptions = useMemo<LedgerOption[]>(() => itemTypes.map((item) => ({
+    id: `quantity:${item.category}:${item.name}`,
+    label: `${item.name}（${item.category}）`,
+    kind: 'quantity',
+    category: item.category,
+    itemType: item.name,
+  })), [itemTypes])
 
   useEffect(() => {
     if (!session || !ledgerAssetQuery.trim()) return
@@ -354,61 +437,87 @@ export function ContainerManagement() {
       const identifier = normalizeAssetIdentifier(ledgerAssetQuery)
       const result = await supabase.from('container_assets').select('id,label,asset_type,size_label')
         .ilike('label', `%${identifier}%`).limit(30)
-      if (!result.error) setAssetOptions((result.data ?? []).map((item) => ({ id: item.id, label: item.label, assetType: item.asset_type, sizeLabel: item.size_label })))
+      if (!result.error) {
+        const containers: LedgerOption[] = (result.data ?? []).map((item) => ({ id: item.id, label: item.label, kind: 'container' as const, sizeLabel: item.size_label }))
+          .sort((a, b) => compareCodes(a.label, b.label))
+        const query = normalize(ledgerAssetQuery)
+        const quantity = quantityLedgerOptions.filter((item) => normalize(item.label).includes(query))
+        setAssetOptions([...containers, ...quantity])
+      }
     }, 250)
     return () => window.clearTimeout(timer)
-  }, [ledgerAssetQuery, session])
+  }, [ledgerAssetQuery, quantityLedgerOptions, session])
 
   useEffect(() => {
     if (!session || historyCompany.trim().length < 1) return
     if (masterReady && customers.length) {
       const query = normalize(historyCompany)
       const timer = window.setTimeout(() => {
-        setCompanyOptions(customers.filter((customer) =>
-          [customer.customerCode, customer.name, customer.nameKana].some((value) => normalize(value).includes(query)),
-        ).slice(0, 30).map((customer) => customer.name))
+        setCompanyOptions(customersByCode.filter((customer) =>
+          [customer.customerCode, customer.name, customer.nameKana, customer.previousName].some((value) => normalize(value).includes(query)),
+        ).slice(0, 30))
       }, 0)
       return () => window.clearTimeout(timer)
     }
     const timer = window.setTimeout(async () => {
       const result = await supabase.from('container_reports').select('company_name')
         .ilike('company_name', `%${historyCompany.trim()}%`).limit(200)
-      if (!result.error) setCompanyOptions(Array.from(new Set((result.data ?? []).map((item) => item.company_name))).slice(0, 30))
+      if (!result.error) setCompanyOptions(Array.from(new Set((result.data ?? []).map((item) => item.company_name))).slice(0, 30).map((name, index) => ({ id: `legacy-${index}`, customerCode: '', name, nameKana: '', previousName: '' })))
     }, 250)
     return () => window.clearTimeout(timer)
-  }, [customers, historyCompany, masterReady, session])
+  }, [customers.length, customersByCode, historyCompany, masterReady, session])
 
   useEffect(() => {
     if (!session || !ledgerAssetId) return
     let cancelled = false
     void (async () => {
       setSheetLoading(true)
-      const reports: ContainerReport[] = []
-      for (let from = 0; ; from += PAGE_SIZE) {
-        const result = await supabase.from('container_reports').select('*')
-          .or(`install_asset_id.eq.${ledgerAssetId},collect_asset_id.eq.${ledgerAssetId}`)
-          .order('work_date', { ascending: true }).range(from, from + PAGE_SIZE - 1)
-        if (result.error || cancelled) break
-        reports.push(...(result.data ?? []).map(reportFromRow))
-        if ((result.data?.length ?? 0) < PAGE_SIZE) break
+      const option = assetOptions.find((item) => item.id === ledgerAssetId)
+      if (option?.kind === 'quantity' && option.category && option.itemType) {
+        const reports: ContainerReport[] = []
+        for (let from = 0; ; from += PAGE_SIZE) {
+          const result = await supabase.from('container_reports').select('*')
+            .eq('asset_type', option.category).eq('size_label', option.itemType)
+            .order('work_date', { ascending: true }).order('entry_order', { ascending: true })
+            .range(from, from + PAGE_SIZE - 1)
+          if (result.error || cancelled) break
+          reports.push(...(result.data ?? []).map(reportFromRow))
+          if ((result.data?.length ?? 0) < PAGE_SIZE) break
+        }
+        if (!cancelled) setLedgerRows(buildQuantityLedgerRows(reports))
+      } else {
+        const assignments: LedgerLifecycleRow[] = []
+        for (let from = 0; ; from += PAGE_SIZE) {
+          const result = await supabase.from('container_assignments')
+            .select('id,installed_on,collected_on,company_name,site_name')
+            .eq('asset_id', ledgerAssetId).order('installed_on', { ascending: true, nullsFirst: true })
+            .range(from, from + PAGE_SIZE - 1)
+          if (result.error || cancelled) break
+          assignments.push(...(result.data ?? []).map((item) => ({
+            id: String(item.id), installedOn: item.installed_on ? String(item.installed_on) : null,
+            collectedOn: item.collected_on ? String(item.collected_on) : null,
+            companyName: String(item.company_name), siteName: String(item.site_name), quantity: 1,
+          })))
+          if ((result.data?.length ?? 0) < PAGE_SIZE) break
+        }
+        if (!cancelled) setLedgerRows(assignments)
       }
-      if (!cancelled) {
-        setLedgerRows(reports)
-        setSheetLoading(false)
-      }
+      if (!cancelled) setSheetLoading(false)
     })()
     return () => { cancelled = true }
-  }, [ledgerAssetId, session])
+  }, [assetOptions, ledgerAssetId, session])
 
   useEffect(() => {
-    if (!session || !historyCompany.trim() || !historyYear) return
+    if (!session || (!historyCompany.trim() && !historyCustomerId) || !historyYear) return
     let cancelled = false
     void (async () => {
       setSheetLoading(true)
       const reports: ContainerReport[] = []
       for (let from = 0; ; from += PAGE_SIZE) {
-        const result = await supabase.from('container_reports').select('*').eq('company_name', historyCompany.trim())
+        let query = supabase.from('container_reports').select('*')
           .gte('work_date', `${historyYear}-01-01`).lte('work_date', `${historyYear}-12-31`)
+        query = historyCustomerId ? query.eq('customer_id', historyCustomerId) : query.eq('company_name', historyCompany.trim())
+        const result = await query
           .order('work_date', { ascending: true }).order('entry_order', { ascending: true }).range(from, from + PAGE_SIZE - 1)
         if (result.error || cancelled) break
         reports.push(...(result.data ?? []).map(reportFromRow))
@@ -420,7 +529,7 @@ export function ContainerManagement() {
       }
     })()
     return () => { cancelled = true }
-  }, [historyCompany, historyYear, session])
+  }, [historyCompany, historyCustomerId, historyYear, session])
 
   function printSheet(target: Exclude<PrintTarget, null>) {
     document.getElementById('print-page-orientation')?.remove()
@@ -448,7 +557,7 @@ export function ContainerManagement() {
       setAssetOptions([])
       return
     }
-    const exact = assetOptions.find((item) => item.label === value || `${item.label}（${item.sizeLabel}・${item.assetType}）` === value)
+    const exact = assetOptions.find((item) => item.label === value)
     if (exact) setLedgerAssetId(exact.id)
     else {
       const identifier = normalizeAssetIdentifier(value)
@@ -456,19 +565,48 @@ export function ContainerManagement() {
     }
   }
 
+  function selectHistoryCustomer(value: string) {
+    setHistoryCompany(value)
+    setHistoryRows([])
+    if (!value.trim()) {
+      setHistoryCustomerId('')
+      setCompanyOptions([])
+      return
+    }
+    const exact = customers.find((customer) =>
+      value === customerOption(customer)
+      || value === customer.customerCode
+      || value === customer.name
+      || value === customer.nameKana
+      || value === customerDisplayName(customer),
+    )
+    setHistoryCustomerId(exact?.id ?? '')
+    if (exact) setHistoryCompany(customerDisplayName(exact))
+  }
+
   function updateRow(id: string, patch: Partial<ReportRow>) {
     setRows((current) => current.map((row) => row.id === id ? { ...row, ...patch } : row))
   }
 
+  function changeEntryType(rowId: string, entryType: ReportRow['entryType']) {
+    if (entryType === 'container') {
+      updateRow(rowId, { entryType, basketInstallCount: '', basketCollectCount: '' })
+      return
+    }
+    const category: QuantityAssetType = entryType === 'equipment' ? '貸出備品' : 'カゴ'
+    const defaultType = itemTypes.find((item) => item.category === category)?.name ?? (entryType === 'equipment' ? 'シート' : 'カゴ')
+    updateRow(rowId, { entryType, basketType: defaultType, installAssetId: '', collectAssetId: '' })
+  }
+
   function updateCustomer(rowId: string, value: string) {
-    const exact = customers.find((customer) => value === customerOption(customer) || value === customer.name || value === customer.customerCode)
+    const exact = customers.find((customer) => value === customerOption(customer) || value === customer.name || value === customer.customerCode || value === customer.nameKana || value === customerDisplayName(customer))
     updateRow(rowId, exact
-      ? { customerId: exact.id, companyName: exact.name, siteId: '', siteName: '' }
+      ? { customerId: exact.id, companyName: customerDisplayName(exact), siteId: '', siteName: '' }
       : { customerId: '', companyName: value, siteId: '', siteName: '' })
   }
 
   function updateSite(rowId: string, customerId: string, value: string) {
-    const exact = sites.find((site) => site.customerId === customerId && (value === siteOption(site) || value === site.name || value === site.siteCode))
+    const exact = sites.find((site) => site.customerId === customerId && (value === siteOption(site) || value === site.name || value === site.siteCode || value === site.nameKana))
     updateRow(rowId, exact ? { siteId: exact.id, siteName: exact.name } : { siteId: '', siteName: value })
   }
 
@@ -496,7 +634,7 @@ export function ContainerManagement() {
       || value === customer.nameKana,
     )
     updateCorrection(exact
-      ? { customerId: exact.id, companyName: exact.name, siteId: '', siteName: '' }
+      ? { customerId: exact.id, companyName: customerDisplayName(exact), siteId: '', siteName: '' }
       : { customerId: '', companyName: value, siteId: '', siteName: '' })
   }
 
@@ -546,8 +684,8 @@ export function ContainerManagement() {
       reportId: report.id,
       workDate: report.workDate,
       driverName: report.driverName,
-      entryType: report.assetType === 'カゴ' ? 'basket' : 'container',
-      basketType: report.assetType === 'カゴ' ? report.sizeLabel || 'カゴ' : 'カゴ',
+      entryType: report.assetType === '貸出備品' ? 'equipment' : report.assetType === 'カゴ' ? 'basket' : 'container',
+      basketType: isQuantityAssetType(report.assetType) ? report.sizeLabel || report.assetType : 'カゴ',
       customerId: report.customerId ?? '',
       companyName: report.companyName,
       siteId: report.siteId ?? '',
@@ -566,19 +704,18 @@ export function ContainerManagement() {
     if (!correctionDraft) return
 
     const nextErrors: string[] = []
-    const install = correctionDraft.entryType === 'container' ? asset(correctionDraft.installAssetId) : undefined
-    const collect = correctionDraft.entryType === 'container' ? asset(correctionDraft.collectAssetId) : undefined
+    const install = !isQuantityEntry(correctionDraft) ? asset(correctionDraft.installAssetId) : undefined
+    const collect = !isQuantityEntry(correctionDraft) ? asset(correctionDraft.collectAssetId) : undefined
     const basketInstall = Number(correctionDraft.basketInstallCount || 0)
     const basketCollect = Number(correctionDraft.basketCollectCount || 0)
     if (!correctionDraft.workDate) nextErrors.push('日付を入力してください。')
     if (!correctionDraft.driverName.trim()) nextErrors.push('名前（ドライバー）を入力してください。')
     if (!correctionDraft.customerId) nextErrors.push('登録済みの排出事業者を候補から選択してください。')
     if (!correctionDraft.siteId) nextErrors.push('登録済みの現場を候補から選択してください。')
-    if (correctionDraft.entryType === 'container') {
+    if (!isQuantityEntry(correctionDraft)) {
       if (!install && !collect && !correctionDraft.quantityNote.trim()) nextErrors.push('設置・引上げ・受託数量のいずれかを入力してください。')
-      if (install?.id === collect?.id && install) nextErrors.push('設置と引上げは別の番号にしてください。')
     } else {
-      if (!correctionDraft.basketType.trim()) nextErrors.push('カゴ等の種類を入力してください。')
+      if (!correctionDraft.basketType.trim()) nextErrors.push('種類を入力してください。')
       if (!Number.isInteger(basketInstall) || !Number.isInteger(basketCollect) || basketInstall < 0 || basketCollect < 0) {
         nextErrors.push('設置・引上げは0以上の整数で入力してください。')
       }
@@ -591,7 +728,7 @@ export function ContainerManagement() {
     if (!window.confirm('訂正内容を保存すると、現在の設置状況・管理表・収集履歴も再計算されます。保存してよろしいですか？')) return
 
     setCorrectionLoading(true)
-    const result = await supabase.rpc('correct_container_report', {
+    const result = await supabase.rpc('correct_container_report_v2', {
       p_report_id: correctionDraft.reportId,
       p_work_date: correctionDraft.workDate,
       p_customer_id: correctionDraft.customerId,
@@ -603,9 +740,10 @@ export function ContainerManagement() {
       p_collect_asset_label: collect?.label ?? null,
       p_quantity: correctionDraft.quantityNote.trim(),
       p_note: correctionDraft.quantityNote.trim() || null,
-      p_basket_install_count: correctionDraft.entryType === 'basket' ? basketInstall : 0,
-      p_basket_collect_count: correctionDraft.entryType === 'basket' ? basketCollect : 0,
-      p_size_label: correctionDraft.entryType === 'basket' ? correctionDraft.basketType.trim() : '',
+      p_quantity_install_count: isQuantityEntry(correctionDraft) ? basketInstall : 0,
+      p_quantity_collect_count: isQuantityEntry(correctionDraft) ? basketCollect : 0,
+      p_asset_type: isQuantityEntry(correctionDraft) ? quantityCategory(correctionDraft) : 'コンテナ',
+      p_size_label: isQuantityEntry(correctionDraft) ? correctionDraft.basketType.trim() : '',
     })
     if (result.error) {
       setCorrectionErrors([`訂正を保存できませんでした：${result.error.message}`])
@@ -645,18 +783,18 @@ export function ContainerManagement() {
       }
       if (workType(row) !== '設置' && !row.quantityNote.trim()) next.push(`${line}行目：受託数量・備考を入力してください。`)
 
-      if (row.entryType === 'basket') {
-        if (!row.basketType.trim()) next.push(`${line}行目：カゴ等の種類を入力してください。`)
+      if (isQuantityEntry(row)) {
+        const category = quantityCategory(row)
+        if (!row.basketType.trim()) next.push(`${line}行目：${category}の種類を入力してください。`)
         if (!Number.isInteger(basketInstall) || !Number.isInteger(basketCollect) || basketInstall < 0 || basketCollect < 0) {
-          next.push(`${line}行目：カゴの設置・引上げは0以上の整数で入力してください。`)
+          next.push(`${line}行目：${category}の設置・引上げは0以上の整数で入力してください。`)
         }
-        if (basketInstall === 0 && basketCollect === 0) next.push(`${line}行目：カゴの設置または引上げ台数を入力してください。`)
-        if (!masterReady || !row.customerId || !row.siteId) next.push(`${line}行目：カゴは登録済みの排出事業者と現場を選択してください。`)
+        if (basketInstall === 0 && basketCollect === 0) next.push(`${line}行目：${category}の設置または引上げ台数を入力してください。`)
+        if (!masterReady || !row.customerId || !row.siteId) next.push(`${line}行目：${category}は登録済みの排出事業者と現場を選択してください。`)
         return
       }
 
       if (!install && !collect && !row.quantityNote.trim()) next.push(`${line}行目：設置・引上げ・受託数量のいずれかを入力してください。`)
-      if (row.installAssetId === row.collectAssetId && row.installAssetId) next.push(`${line}行目：設置と引上げは別の番号にしてください。`)
 
       if (install) {
         const movement = movements.get(install.id) ?? { asset: install }
@@ -702,14 +840,16 @@ export function ContainerManagement() {
 
     })
 
-    const basketGroups = new Map<string, { row: ReportRow; basketType: string; install: number; collect: number; line: number }>()
+    const basketGroups = new Map<string, { row: ReportRow; category: QuantityAssetType; basketType: string; install: number; collect: number; line: number }>()
     inputRows.forEach((row, index) => {
-      if (row.entryType !== 'basket' || !row.customerId || !row.siteId) return
+      if (!isQuantityEntry(row) || !row.customerId || !row.siteId) return
+      const category = quantityCategory(row)
       const basketType = row.basketType.trim()
-      const key = `${row.customerId}:${row.siteId}:${basketType}`
+      const key = `${row.customerId}:${row.siteId}:${category}:${basketType}`
       const current = basketGroups.get(key)
       basketGroups.set(key, {
         row,
+        category,
         basketType,
         install: (current?.install ?? 0) + Number(row.basketInstallCount || 0),
         collect: (current?.collect ?? 0) + Number(row.basketCollectCount || 0),
@@ -717,9 +857,9 @@ export function ContainerManagement() {
       })
     })
     basketGroups.forEach((movement) => {
-      const current = basketBalances.find((item) => item.customerId === movement.row.customerId && item.siteId === movement.row.siteId && item.basketType === movement.basketType)?.quantity ?? 0
+      const current = basketBalances.find((item) => item.customerId === movement.row.customerId && item.siteId === movement.row.siteId && item.itemCategory === movement.category && item.basketType === movement.basketType)?.quantity ?? 0
       if (current + movement.install - movement.collect < 0) {
-        next.push(`${movement.line}行目：カゴの引上げ台数が現在の設置台数（${current}台）を超えています。`)
+        next.push(`${movement.line}行目：${movement.category}の引上げ台数が現在の設置台数（${current}台）を超えています。`)
       }
     })
 
@@ -741,8 +881,8 @@ export function ContainerManagement() {
 
     const batch = Date.now()
     const reports: ContainerReport[] = inputRows.map((row, index) => {
-      const install = row.entryType === 'container' ? asset(row.installAssetId) : undefined
-      const collect = row.entryType === 'container' ? asset(row.collectAssetId) : undefined
+      const install = !isQuantityEntry(row) ? asset(row.installAssetId) : undefined
+      const collect = !isQuantityEntry(row) ? asset(row.collectAssetId) : undefined
       return {
         id: `report-${batch}-${index}`,
         workDate,
@@ -756,8 +896,8 @@ export function ContainerManagement() {
         installAssetLabel: install?.label,
         collectAssetId: collect?.id,
         collectAssetLabel: collect?.label,
-        assetType: row.entryType === 'basket' ? 'カゴ' : install?.assetType ?? collect?.assetType ?? '手積み',
-        sizeLabel: row.entryType === 'basket' ? row.basketType.trim() : install?.sizeLabel ?? collect?.sizeLabel ?? '手積み',
+        assetType: isQuantityEntry(row) ? quantityCategory(row) : install?.assetType ?? collect?.assetType ?? '手積み',
+        sizeLabel: isQuantityEntry(row) ? row.basketType.trim() : install?.sizeLabel ?? collect?.sizeLabel ?? '手積み',
         quantity: row.quantityNote.trim(),
         note: row.quantityNote.trim() || undefined,
         basketInstallCount: Number(row.basketInstallCount || 0),
@@ -768,7 +908,7 @@ export function ContainerManagement() {
 
     setLoading(true)
     const usedAssets = new Map<string, NonNullable<ReturnType<typeof asset>>>()
-    inputRows.filter((row) => row.entryType === 'container').forEach((row) => {
+    inputRows.filter((row) => !isQuantityEntry(row)).forEach((row) => {
       const install = asset(row.installAssetId)
       const collect = asset(row.collectAssetId)
       if (install) usedAssets.set(install.id, install)
@@ -817,19 +957,20 @@ export function ContainerManagement() {
     }
 
     const basketResults = await Promise.all(Array.from(plan.basketGroups.values()).map((movement) =>
-      supabase.rpc('apply_basket_movement', {
+      supabase.rpc('apply_quantity_movement', {
         p_customer_id: movement.row.customerId,
         p_site_id: movement.row.siteId,
         p_company_name: movement.row.companyName.trim(),
         p_site_name: movement.row.siteName.trim(),
         p_install_count: movement.install,
         p_collect_count: movement.collect,
-        p_basket_type: movement.basketType,
+        p_item_category: movement.category,
+        p_item_type: movement.basketType,
       }),
     ))
     const basketError = basketResults.find((result) => result.error)?.error
     if (basketError) {
-      setErrors([`カゴの台数を保存できませんでした：${basketError.message}`])
+      setErrors([`台数管理データを保存できませんでした：${basketError.message}`])
       setLoading(false)
       return
     }
@@ -901,6 +1042,137 @@ export function ContainerManagement() {
     setSiteKana('')
     await loadFromSupabase()
     setMasterMessage('現場を登録しました。')
+  }
+
+  function updateCustomerNameWithKana(value: string) {
+    setCustomerName(value)
+    const candidate = kanaCandidate(value)
+    if (candidate) setCustomerKana(candidate)
+    if (!value) setCustomerKana('')
+  }
+
+  function updateSiteNameWithKana(value: string) {
+    setSiteName(value)
+    const candidate = kanaCandidate(value)
+    if (candidate) setSiteKana(candidate)
+    if (!value) setSiteKana('')
+  }
+
+  function updateComposingKana(target: 'customer' | 'site', value: string) {
+    const candidate = kanaCandidate(value)
+    if (!candidate) return
+    if (target === 'customer') setCustomerKana(`${customerKanaBeforeComposition.current}${candidate}`)
+    else setSiteKana(`${siteKanaBeforeComposition.current}${candidate}`)
+  }
+
+  async function addDriver(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const name = driverMasterName.trim()
+    setErrors([])
+    setMasterMessage('')
+    if (!name) {
+      setErrors(['ドライバー名を入力してください。'])
+      return
+    }
+    setLoading(true)
+    const result = await supabase.from('container_drivers').insert({ name })
+    if (result.error) {
+      setErrors([result.error.code === '23505' ? '同じドライバー名がすでに登録されています。' : `ドライバーを登録できませんでした：${result.error.message}`])
+      setLoading(false)
+      return
+    }
+    setDriverMasterName('')
+    await loadFromSupabase()
+    setMasterMessage('ドライバーを登録しました。')
+  }
+
+  async function addItemType(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const name = itemTypeName.trim()
+    setErrors([])
+    setMasterMessage('')
+    if (!name) {
+      setErrors(['種類名を入力してください。'])
+      return
+    }
+    setLoading(true)
+    const result = await supabase.from('container_item_types').insert({ category: itemCategory, name })
+    if (result.error) {
+      setErrors([result.error.code === '23505' ? '同じ種類名がすでに登録されています。' : `種類を登録できませんでした：${result.error.message}`])
+      setLoading(false)
+      return
+    }
+    setItemTypeName('')
+    await loadFromSupabase()
+    setMasterMessage(`${itemCategory}の種類を登録しました。`)
+  }
+
+  async function saveCustomerEdit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!customerEdit) return
+    setErrors([])
+    setMasterMessage('')
+    setLoading(true)
+    const result = await supabase.rpc('update_container_customer_master', {
+      p_customer_id: customerEdit.id,
+      p_customer_code: customerEdit.customerCode.trim(),
+      p_name: customerEdit.name.trim(),
+      p_name_kana: customerEdit.nameKana.trim(),
+    })
+    if (result.error) {
+      setErrors([result.error.code === '23505' ? '同じ顧客番号がすでに登録されています。' : `排出事業者を修正できませんでした：${result.error.message}`])
+      setLoading(false)
+      return
+    }
+    setCustomerEdit(null)
+    await loadFromSupabase()
+    setMasterMessage('排出事業者を修正しました。名称を変更した場合、今後の入力は「現社名（旧社名：直前の社名）」で保存されます。')
+  }
+
+  async function saveSiteEdit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!siteEdit) return
+    setErrors([])
+    setMasterMessage('')
+    setLoading(true)
+    const result = await supabase.rpc('update_container_site_master', {
+      p_site_id: siteEdit.id,
+      p_site_code: siteEdit.siteCode.trim(),
+      p_name: siteEdit.name.trim(),
+      p_name_kana: siteEdit.nameKana.trim(),
+    })
+    if (result.error) {
+      setErrors([result.error.code === '23505' ? '同じ現場番号がすでに登録されています。' : `現場を修正できませんでした：${result.error.message}`])
+      setLoading(false)
+      return
+    }
+    setSiteEdit(null)
+    await loadFromSupabase()
+    setMasterMessage('現場を修正しました。今後の入力から新しい現場名を使用します。')
+  }
+
+  async function deleteReport(report: ContainerReport) {
+    setCorrectionErrors([])
+    setCorrectionMessage('')
+    const confirmed = window.confirm(
+      `${formatDate(report.workDate)}／${report.companyName}／${report.siteName} の入力を削除します。\n\n削除すると元に戻すことはできません。現在の設置状況・管理表・収集履歴も再計算されます。削除してよろしいですか？`,
+    )
+    if (!confirmed) return
+    setCorrectionLoading(true)
+    const result = await supabase.rpc('delete_container_report', { p_report_id: report.id })
+    if (result.error) {
+      setCorrectionErrors([`入力履歴を削除できませんでした：${result.error.message}`])
+      setCorrectionLoading(false)
+      return
+    }
+    const response = result.data as { warnings?: string[] } | null
+    const warnings = response?.warnings ?? []
+    await Promise.all([loadFromSupabase(), loadCorrectionReports()])
+    setCorrectionDraft(null)
+    setCorrectionMessage(warnings.length
+      ? `入力履歴を削除しました。確認事項：${warnings.join('、')}`
+      : '入力履歴を削除し、現在の設置状況・管理表・収集履歴を再計算しました。')
+    setCorrectionLoading(false)
   }
 
   async function signIn(event: React.FormEvent<HTMLFormElement>) {
@@ -1031,7 +1303,7 @@ export function ContainerManagement() {
               <input type="date" className="w-full border border-slate-300 px-4 py-3" value={workDate} onChange={(event) => setWorkDate(event.target.value)} />
             </label>
             <label className="space-y-2 text-sm font-bold text-slate-700">名前（ドライバー）
-              <input className="w-full border border-slate-300 px-4 py-3" placeholder="例：しのみや" value={driverName} onChange={(event) => setDriverName(event.target.value)} />
+              <select className="w-full border border-slate-300 bg-white px-4 py-3" value={driverName} onChange={(event) => setDriverName(event.target.value)}><option value="">選択してください</option>{drivers.map((driver) => <option key={driver.id} value={driver.name}>{driver.name}</option>)}</select>
             </label>
           </div>
         </div>
@@ -1045,25 +1317,24 @@ export function ContainerManagement() {
               const type = workType(row)
               const selectedCustomer = customers.find((customer) => customer.id === row.customerId)
               const selectedSite = sites.find((site) => site.id === row.siteId)
-              const availableSites = sites.filter((site) => site.customerId === row.customerId)
+              const availableSites = sitesByCode.filter((site) => site.customerId === row.customerId)
+              const availableItemTypes = itemTypes.filter((item) => item.category === quantityCategory(row))
               return <tr key={row.id} className="bg-white align-top">
                 <td className="border border-slate-300 px-3 py-4 text-center font-black">{index + 1}</td>
-                <td className="border border-slate-300 p-2"><select className="min-w-32 border border-slate-200 bg-white px-3 py-3" value={row.entryType} onChange={(event) => updateRow(row.id, event.target.value === 'basket'
-                  ? { entryType: 'basket', installAssetId: '', collectAssetId: '' }
-                  : { entryType: 'container', basketInstallCount: '', basketCollectCount: '' })}><option value="container">コンテナ</option><option value="basket">台数管理</option></select>
-                  {row.entryType === 'basket' ? <><input className="mt-2 min-w-32 border border-slate-200 px-3 py-3" list={`basket-type-options-${row.id}`} placeholder="種類を入力" value={row.basketType} onChange={(event) => updateRow(row.id, { basketType: event.target.value })} /><datalist id={`basket-type-options-${row.id}`}>{['カゴ', '1.5カゴ', 'IBCコンテナ', 'ネット', 'ネット(8㎥)', '黒ネット', 'シート', 'シート(8㎥)', 'ブルーシート', 'キーパー', '岩本コンテナ', '山畑コンテナ（4㎥）', '宇賀神カゴ', 'GOKO(4㎥)'].map((item) => <option key={item} value={item} />)}</datalist></> : null}</td>
+                <td className="border border-slate-300 p-2"><select className="min-w-36 border border-slate-200 bg-white px-3 py-3" value={row.entryType} onChange={(event) => changeEntryType(row.id, event.target.value as ReportRow['entryType'])}><option value="container">コンテナ</option><option value="basket">カゴ（台数）</option><option value="equipment">貸出備品（台数）</option></select>
+                  {isQuantityEntry(row) ? <select className="mt-2 block min-w-36 border border-slate-200 bg-white px-3 py-3" value={row.basketType} onChange={(event) => updateRow(row.id, { basketType: event.target.value })}><option value="">種類を選択</option>{availableItemTypes.map((item) => <option key={item.id} value={item.name}>{item.name}</option>)}</select> : null}</td>
                 <td className="border border-slate-300 p-2">
                   <input className="w-full min-w-56 border border-slate-200 px-3 py-3" list={`customer-options-${row.id}`} placeholder="番号・名称・カナで検索" value={selectedCustomer ? customerOption(selectedCustomer) : row.companyName} onChange={(event) => updateCustomer(row.id, event.target.value)} />
-                  <datalist id={`customer-options-${row.id}`}>{customers.map((customer) => <option key={customer.id} value={customerOption(customer)} />)}</datalist>
+                  <datalist id={`customer-options-${row.id}`}>{customersByCode.map((customer) => <option key={customer.id} value={customerOption(customer)} />)}</datalist>
                 </td>
                 <td className="border border-slate-300 p-2">
                   <input className="w-full min-w-56 border border-slate-200 px-3 py-3" list={`site-options-${row.id}`} placeholder={row.customerId ? '番号・名称・カナで検索' : '先に排出事業者を選択'} value={selectedSite ? siteOption(selectedSite) : row.siteName} onChange={(event) => updateSite(row.id, row.customerId, event.target.value)} />
                   <datalist id={`site-options-${row.id}`}>{availableSites.map((site) => <option key={site.id} value={siteOption(site)} />)}</datalist>
                 </td>
-                <td className="border border-slate-300 p-2">{row.entryType === 'basket'
+                <td className="border border-slate-300 p-2">{isQuantityEntry(row)
                   ? <input type="number" min="0" step="1" inputMode="numeric" className="w-full min-w-24 border border-slate-200 px-3 py-3" placeholder="台数" value={row.basketInstallCount} onChange={(event) => updateRow(row.id, { basketInstallCount: event.target.value })} />
                   : <input autoCapitalize="characters" className="w-full min-w-28 border border-slate-200 px-3 py-3" placeholder="408 / CS002" value={assetIdentifier(row.installAssetId)} onChange={(event) => updateRow(row.id, { installAssetId: normalizeAssetIdentifier(event.target.value) })} />}</td>
-                <td className="border border-slate-300 p-2">{row.entryType === 'basket'
+                <td className="border border-slate-300 p-2">{isQuantityEntry(row)
                   ? <input type="number" min="0" step="1" inputMode="numeric" className="w-full min-w-24 border border-slate-200 px-3 py-3" placeholder="台数" value={row.basketCollectCount} onChange={(event) => updateRow(row.id, { basketCollectCount: event.target.value })} />
                   : <input autoCapitalize="characters" className="w-full min-w-28 border border-slate-200 px-3 py-3" placeholder="210 / M003" value={assetIdentifier(row.collectAssetId)} onChange={(event) => updateRow(row.id, { collectAssetId: normalizeAssetIdentifier(event.target.value) })} />}</td>
                 <td className="border border-slate-300 p-2"><textarea className="min-h-12 w-full min-w-52 border border-slate-200 px-3 py-3" placeholder="例：金属くず 310kg（自動車部品）" value={row.quantityNote} onChange={(event) => updateRow(row.id, { quantityNote: event.target.value })} /></td>
@@ -1108,7 +1379,7 @@ export function ContainerManagement() {
             <h3 className="text-lg font-black">排出事業者を登録</h3>
             <div className="mt-4 grid gap-4">
               <label className="text-sm font-bold">顧客番号<input className="mt-2 w-full border border-slate-300 px-4 py-3" required placeholder="例：C0001" value={customerCode} onChange={(event) => setCustomerCode(event.target.value)} /></label>
-              <label className="text-sm font-bold">排出事業者名<input className="mt-2 w-full border border-slate-300 px-4 py-3" required placeholder="例：大橋技建株式会社" value={customerName} onChange={(event) => setCustomerName(event.target.value)} /></label>
+              <label className="text-sm font-bold">排出事業者名<input className="mt-2 w-full border border-slate-300 px-4 py-3" required placeholder="例：大橋技建株式会社" value={customerName} onChange={(event) => updateCustomerNameWithKana(event.target.value)} onCompositionStart={() => { customerKanaBeforeComposition.current = customerKana }} onCompositionUpdate={(event) => updateComposingKana('customer', event.data)} /></label>
               <label className="text-sm font-bold">カナ<input className="mt-2 w-full border border-slate-300 px-4 py-3" placeholder="例：オオハシギケン" value={customerKana} onChange={(event) => setCustomerKana(event.target.value)} /></label>
             </div>
             <button type="submit" disabled={loading || !masterReady} className="mt-5 w-full bg-emerald-800 px-4 py-3 font-black text-white disabled:opacity-50">排出事業者を登録</button>
@@ -1118,15 +1389,43 @@ export function ContainerManagement() {
             <div className="mt-4 grid gap-4">
               <label className="text-sm font-bold">排出事業者
                 <input className="mt-2 w-full border border-slate-300 bg-white px-4 py-3" list="site-customer-options" required placeholder="顧客番号・名称・カナで検索" value={siteCustomerQuery} onChange={(event) => selectSiteCustomer(event.target.value)} />
-                <datalist id="site-customer-options">{customers.map((customer) => <option key={customer.id} value={customerOption(customer)} />)}</datalist>
+                <datalist id="site-customer-options">{customersByCode.map((customer) => <option key={customer.id} value={customerOption(customer)} />)}</datalist>
               </label>
               <label className="text-sm font-bold">現場番号<input className="mt-2 w-full border border-slate-300 px-4 py-3" required placeholder="例：S001" value={siteCode} onChange={(event) => setSiteCode(event.target.value)} /></label>
-              <label className="text-sm font-bold">現場名<input className="mt-2 w-full border border-slate-300 px-4 py-3" required placeholder="例：本社工場" value={siteName} onChange={(event) => setSiteName(event.target.value)} /></label>
+              <label className="text-sm font-bold">現場名<input className="mt-2 w-full border border-slate-300 px-4 py-3" required placeholder="例：本社工場" value={siteName} onChange={(event) => updateSiteNameWithKana(event.target.value)} onCompositionStart={() => { siteKanaBeforeComposition.current = siteKana }} onCompositionUpdate={(event) => updateComposingKana('site', event.data)} /></label>
               <label className="text-sm font-bold">カナ<input className="mt-2 w-full border border-slate-300 px-4 py-3" placeholder="例：ホンシャコウジョウ" value={siteKana} onChange={(event) => setSiteKana(event.target.value)} /></label>
             </div>
             <button type="submit" disabled={loading || !masterReady} className="mt-5 w-full bg-emerald-800 px-4 py-3 font-black text-white disabled:opacity-50">現場を登録</button>
           </form>
         </div>
+        <div className="grid gap-6 lg:grid-cols-2">
+          <form className="panel rounded-none p-5" onSubmit={addDriver}>
+            <h3 className="text-lg font-black">ドライバーを登録</h3>
+            <p className="mt-2 text-sm text-slate-600">登録後、作業日報の名前欄から選択できます。</p>
+            <label className="mt-4 block text-sm font-bold">ドライバー名<input className="mt-2 w-full border border-slate-300 px-4 py-3" required placeholder="例：四宮" value={driverMasterName} onChange={(event) => setDriverMasterName(event.target.value)} /></label>
+            <button type="submit" disabled={loading || !masterReady} className="mt-5 w-full bg-emerald-800 px-4 py-3 font-black text-white disabled:opacity-50">ドライバーを登録</button>
+          </form>
+          <form className="panel rounded-none p-5" onSubmit={addItemType}>
+            <h3 className="text-lg font-black">台数管理の種類を追加</h3>
+            <p className="mt-2 text-sm text-slate-600">新しいカゴや貸出備品を追加すると、日報入力と管理表から選択できます。</p>
+            <div className="mt-4 grid gap-4 sm:grid-cols-[160px_1fr]">
+              <label className="text-sm font-bold">区分<select className="mt-2 w-full border border-slate-300 bg-white px-4 py-3" value={itemCategory} onChange={(event) => setItemCategory(event.target.value as QuantityAssetType)}><option value="カゴ">カゴ</option><option value="貸出備品">貸出備品</option></select></label>
+              <label className="text-sm font-bold">種類名<input className="mt-2 w-full border border-slate-300 px-4 py-3" required placeholder="例：3㎥カゴ／ドラム缶" value={itemTypeName} onChange={(event) => setItemTypeName(event.target.value)} /></label>
+            </div>
+            <button type="submit" disabled={loading || !masterReady} className="mt-5 w-full bg-emerald-800 px-4 py-3 font-black text-white disabled:opacity-50">種類を追加</button>
+          </form>
+        </div>
+        {customerEdit ? <form className="panel rounded-none border-l-8 border-amber-600 p-5" onSubmit={saveCustomerEdit}>
+          <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-lg font-black">排出事業者を修正</h3><p className="mt-2 text-sm text-slate-600">社名を変更すると、変更後の入力は「現社名（旧社名：直前の社名）」で保存されます。過去の履歴は変更しません。</p></div><button type="button" className="inline-flex items-center gap-2 border border-slate-300 px-4 py-2 text-sm font-bold" onClick={() => setCustomerEdit(null)}><X className="h-4 w-4" />閉じる</button></div>
+          <div className="mt-4 grid gap-4 md:grid-cols-3"><label className="text-sm font-bold">顧客番号<input required className="mt-2 w-full border border-slate-300 px-4 py-3" value={customerEdit.customerCode} onChange={(event) => setCustomerEdit({ ...customerEdit, customerCode: event.target.value })} /></label><label className="text-sm font-bold">排出事業者名<input required className="mt-2 w-full border border-slate-300 px-4 py-3" value={customerEdit.name} onChange={(event) => setCustomerEdit({ ...customerEdit, name: event.target.value })} /></label><label className="text-sm font-bold">カナ<input className="mt-2 w-full border border-slate-300 px-4 py-3" value={customerEdit.nameKana} onChange={(event) => setCustomerEdit({ ...customerEdit, nameKana: event.target.value })} /></label></div>
+          {customerEdit.previousName ? <p className="mt-3 text-sm text-slate-600">現在保持している旧社名：{customerEdit.previousName}</p> : null}
+          <button type="submit" disabled={loading} className="mt-5 bg-emerald-800 px-6 py-3 font-black text-white disabled:opacity-50">修正を保存</button>
+        </form> : null}
+        {siteEdit ? <form className="panel rounded-none border-l-8 border-amber-600 p-5" onSubmit={saveSiteEdit}>
+          <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-lg font-black">現場を修正</h3><p className="mt-2 text-sm text-slate-600">変更後に登録する日報から、新しい現場名を使用します。</p></div><button type="button" className="inline-flex items-center gap-2 border border-slate-300 px-4 py-2 text-sm font-bold" onClick={() => setSiteEdit(null)}><X className="h-4 w-4" />閉じる</button></div>
+          <div className="mt-4 grid gap-4 md:grid-cols-3"><label className="text-sm font-bold">現場番号<input required className="mt-2 w-full border border-slate-300 px-4 py-3" value={siteEdit.siteCode} onChange={(event) => setSiteEdit({ ...siteEdit, siteCode: event.target.value })} /></label><label className="text-sm font-bold">現場名<input required className="mt-2 w-full border border-slate-300 px-4 py-3" value={siteEdit.name} onChange={(event) => setSiteEdit({ ...siteEdit, name: event.target.value })} /></label><label className="text-sm font-bold">カナ<input className="mt-2 w-full border border-slate-300 px-4 py-3" value={siteEdit.nameKana} onChange={(event) => setSiteEdit({ ...siteEdit, nameKana: event.target.value })} /></label></div>
+          <button type="submit" disabled={loading} className="mt-5 bg-emerald-800 px-6 py-3 font-black text-white disabled:opacity-50">修正を保存</button>
+        </form> : null}
         {errors.length ? <div className="border-l-8 border-rose-700 bg-rose-50 p-4 text-sm font-bold leading-7 text-rose-900">{errors.map((error) => <p key={error}>{error}</p>)}</div> : null}
         {masterMessage ? <p className="bg-sky-50 px-4 py-3 text-sm font-bold text-sky-800">{masterMessage}</p> : null}
         <section className="panel rounded-none p-5">
@@ -1144,7 +1443,12 @@ export function ContainerManagement() {
               </label>
             </div>
           </div>
-          <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[760px] text-sm"><thead className="bg-slate-100"><tr>{['顧客番号', '排出事業者名', 'カナ', '登録済み現場'].map((title) => <th key={title} className="border border-slate-200 px-3 py-3 text-left">{title}</th>)}</tr></thead><tbody>{filteredCustomers.map((customer) => <tr key={customer.id}><td className="border border-slate-200 px-3 py-3 font-bold">{customer.customerCode}</td><td className="border border-slate-200 px-3 py-3">{customer.name}</td><td className="border border-slate-200 px-3 py-3">{customer.nameKana}</td><td className="border border-slate-200 px-3 py-3">{sites.filter((site) => site.customerId === customer.id).map((site) => `${site.siteCode} ${site.name}${site.nameKana ? `（${site.nameKana}）` : ''}`).join('、') || '未登録'}</td></tr>)}</tbody></table></div>
+          <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[1080px] table-fixed text-sm"><colgroup><col className="w-32" /><col className="w-72" /><col className="w-72" /><col /></colgroup><thead className="bg-slate-100"><tr>{['顧客番号', '排出事業者名', 'カナ', '登録済み現場（現場番号順）'].map((title) => <th key={title} className="border border-slate-200 px-3 py-3 text-left">{title}</th>)}</tr></thead><tbody>{filteredCustomers.map((customer) => {
+            const customerSites = sitesByCode.filter((site) => site.customerId === customer.id)
+            const expanded = expandedCustomerIds.has(customer.id)
+            const visibleSites = expanded ? customerSites : customerSites.slice(0, 3)
+            return <tr key={customer.id} className="align-top"><td className="border border-slate-200 px-3 py-3 font-bold"><p>{customer.customerCode}</p><button type="button" className="mt-3 inline-flex items-center gap-1 border border-emerald-700 px-2 py-1 text-xs font-black text-emerald-800" onClick={() => { setCustomerEdit({ id: customer.id, customerCode: customer.customerCode, name: customer.name, nameKana: customer.nameKana, previousName: customer.previousName }); setSiteEdit(null) }}><PencilLine className="h-3 w-3" />修正</button></td><td className="border border-slate-200 px-3 py-3 break-words"><p>{customer.name}</p>{customer.previousName ? <p className="mt-1 text-xs text-slate-500">旧社名：{customer.previousName}</p> : null}</td><td className="border border-slate-200 px-3 py-3 break-words">{customer.nameKana}</td><td className="border border-slate-200 px-3 py-3">{visibleSites.length ? <div className="space-y-2">{visibleSites.map((site) => <div key={site.id} className="flex items-start justify-between gap-3 border-b border-slate-100 pb-2 last:border-0"><p><strong>{site.siteCode}</strong> {site.name}{site.nameKana ? <span className="ml-2 text-xs text-slate-500">（{site.nameKana}）</span> : null}</p><button type="button" className="shrink-0 text-xs font-black text-emerald-800 underline" onClick={() => { setSiteEdit({ id: site.id, siteCode: site.siteCode, name: site.name, nameKana: site.nameKana }); setCustomerEdit(null) }}>現場修正</button></div>)}</div> : '未登録'}{customerSites.length > 3 ? <button type="button" className="mt-3 inline-flex items-center gap-1 text-xs font-black text-emerald-800 underline" onClick={() => setExpandedCustomerIds((current) => { const next = new Set(current); if (next.has(customer.id)) next.delete(customer.id); else next.add(customer.id); return next })}>{expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}{expanded ? '3件表示に戻す' : `残り${customerSites.length - 3}件を表示`}</button> : null}</td></tr>
+          })}</tbody></table></div>
           {!filteredCustomers.length ? <p className="mt-4 bg-slate-50 px-4 py-5 text-center text-sm font-bold text-slate-600">該当する排出事業者・現場はありません。</p> : null}
         </section>
       </section> : null}
@@ -1174,10 +1478,10 @@ export function ContainerManagement() {
           </div>
           <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <label className="text-sm font-bold">日付<input type="date" required className="mt-2 w-full border border-slate-300 px-4 py-3" value={correctionDraft.workDate} onChange={(event) => updateCorrection({ workDate: event.target.value })} /></label>
-            <label className="text-sm font-bold">名前（ドライバー）<input required className="mt-2 w-full border border-slate-300 px-4 py-3" value={correctionDraft.driverName} onChange={(event) => updateCorrection({ driverName: event.target.value })} /></label>
+            <label className="text-sm font-bold">名前（ドライバー）<select required className="mt-2 w-full border border-slate-300 bg-white px-4 py-3" value={correctionDraft.driverName} onChange={(event) => updateCorrection({ driverName: event.target.value })}><option value="">選択してください</option>{drivers.map((driver) => <option key={driver.id} value={driver.name}>{driver.name}</option>)}{correctionDraft.driverName && !drivers.some((driver) => driver.name === correctionDraft.driverName) ? <option value={correctionDraft.driverName}>{correctionDraft.driverName}</option> : null}</select></label>
             <label className="text-sm font-bold">排出事業者
               <input required className="mt-2 w-full border border-slate-300 px-4 py-3" list="correction-customer-options" placeholder="番号・名称・カナで検索" value={correctionCustomer ? customerOption(correctionCustomer) : correctionDraft.companyName} onChange={(event) => updateCorrectionCustomer(event.target.value)} />
-              <datalist id="correction-customer-options">{customers.map((customer) => <option key={customer.id} value={customerOption(customer)} />)}</datalist>
+              <datalist id="correction-customer-options">{customersByCode.map((customer) => <option key={customer.id} value={customerOption(customer)} />)}</datalist>
             </label>
             <label className="text-sm font-bold">現場
               <input required className="mt-2 w-full border border-slate-300 px-4 py-3" list="correction-site-options" placeholder={correctionDraft.customerId ? '番号・名称・カナで検索' : '先に排出事業者を選択'} value={correctionSite ? siteOption(correctionSite) : correctionDraft.siteName} onChange={(event) => updateCorrectionSite(correctionDraft.customerId, event.target.value)} />
@@ -1185,8 +1489,8 @@ export function ContainerManagement() {
             </label>
           </div>
           <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            {correctionDraft.entryType === 'basket' ? <>
-              <label className="text-sm font-bold">種類<input required className="mt-2 w-full border border-slate-300 px-4 py-3" value={correctionDraft.basketType} onChange={(event) => updateCorrection({ basketType: event.target.value })} /></label>
+            {isQuantityEntry(correctionDraft) ? <>
+              <label className="text-sm font-bold">種類<select required className="mt-2 w-full border border-slate-300 bg-white px-4 py-3" value={correctionDraft.basketType} onChange={(event) => updateCorrection({ basketType: event.target.value })}><option value="">種類を選択</option>{itemTypes.filter((item) => item.category === quantityCategory(correctionDraft)).map((item) => <option key={item.id} value={item.name}>{item.name}</option>)}</select></label>
               <label className="text-sm font-bold">設置台数<input type="number" min="0" step="1" inputMode="numeric" className="mt-2 w-full border border-slate-300 px-4 py-3" value={correctionDraft.basketInstallCount} onChange={(event) => updateCorrection({ basketInstallCount: event.target.value })} /></label>
               <label className="text-sm font-bold">引上げ台数<input type="number" min="0" step="1" inputMode="numeric" className="mt-2 w-full border border-slate-300 px-4 py-3" value={correctionDraft.basketCollectCount} onChange={(event) => updateCorrection({ basketCollectCount: event.target.value })} /></label>
             </> : <>
@@ -1204,9 +1508,9 @@ export function ContainerManagement() {
         <section className="panel rounded-none p-5">
           <div className="flex flex-wrap items-end justify-between gap-3"><div><h3 className="text-lg font-black">運用開始後の入力履歴</h3><p className="mt-2 text-sm text-slate-600">表示 {correctionRows.length}件</p></div></div>
           <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[1050px] text-sm"><thead className="bg-slate-100"><tr>{['日付', '排出事業者', '現場', 'ドライバー', '設置', '引上げ', '受託数量・備考', ''].map((title) => <th key={title} className="border border-slate-200 px-3 py-3 text-left">{title}</th>)}</tr></thead><tbody>{correctionRows.map((report) => {
-            const installLabel = report.assetType === 'カゴ' ? `${report.sizeLabel}×${report.basketInstallCount ?? 0}` : report.installAssetLabel ?? ''
-            const collectLabel = report.assetType === 'カゴ' ? `${report.sizeLabel}×${report.basketCollectCount ?? 0}` : report.collectAssetLabel ?? ''
-            return <tr key={report.id}><td className="border border-slate-200 px-3 py-3 font-bold">{formatDate(report.workDate)}</td><td className="border border-slate-200 px-3 py-3">{report.companyName}</td><td className="border border-slate-200 px-3 py-3">{report.siteName}</td><td className="border border-slate-200 px-3 py-3">{report.driverName}</td><td className="border border-slate-200 px-3 py-3">{installLabel}</td><td className="border border-slate-200 px-3 py-3">{collectLabel}</td><td className="border border-slate-200 px-3 py-3">{report.note ?? report.quantity}</td><td className="border border-slate-200 px-3 py-3"><button type="button" className="inline-flex items-center gap-2 border border-emerald-700 px-3 py-2 font-black text-emerald-800" onClick={() => startCorrection(report)}><PencilLine className="h-4 w-4" />訂正</button></td></tr>
+            const installLabel = isQuantityAssetType(report.assetType) ? `${report.sizeLabel}×${report.basketInstallCount ?? 0}` : report.installAssetLabel ?? ''
+            const collectLabel = isQuantityAssetType(report.assetType) ? `${report.sizeLabel}×${report.basketCollectCount ?? 0}` : report.collectAssetLabel ?? ''
+            return <tr key={report.id}><td className="border border-slate-200 px-3 py-3 font-bold">{formatDate(report.workDate)}</td><td className="border border-slate-200 px-3 py-3">{report.companyName}</td><td className="border border-slate-200 px-3 py-3">{report.siteName}</td><td className="border border-slate-200 px-3 py-3">{report.driverName}</td><td className="border border-slate-200 px-3 py-3">{installLabel}</td><td className="border border-slate-200 px-3 py-3">{collectLabel}</td><td className="whitespace-pre-wrap border border-slate-200 px-3 py-3">{report.note ?? report.quantity}</td><td className="border border-slate-200 px-3 py-3"><div className="flex gap-2"><button type="button" className="inline-flex items-center gap-2 border border-emerald-700 px-3 py-2 font-black text-emerald-800" onClick={() => startCorrection(report)}><PencilLine className="h-4 w-4" />訂正</button><button type="button" className="inline-flex items-center gap-2 border border-rose-700 px-3 py-2 font-black text-rose-700" onClick={() => void deleteReport(report)}><Trash2 className="h-4 w-4" />削除</button></div></td></tr>
           })}</tbody></table></div>
           {!correctionLoading && !correctionRows.length ? <p className="mt-4 bg-slate-50 px-4 py-5 text-center text-sm font-bold text-slate-600">該当する入力履歴はありません。</p> : null}
         </section>
@@ -1215,21 +1519,21 @@ export function ContainerManagement() {
       {activeTab === 'container-ledger' ? <section className="space-y-5">
         <div className="no-print panel rounded-none p-5">
           <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-            <label className="block text-sm font-bold text-slate-700">コンテナ番号
-              <input className="mt-2 block min-w-72 border border-slate-300 bg-white px-4 py-3" list="container-ledger-options" placeholder="番号を入力して検索" value={ledgerAssetQuery} onChange={(event) => selectLedgerAsset(event.target.value)} />
-              <datalist id="container-ledger-options">{assetOptions.map((item) => <option key={item.id} value={item.label}>{item.sizeLabel}・{item.assetType}</option>)}</datalist>
+            <label className="block text-sm font-bold text-slate-700">管理対象
+              <input className="mt-2 block min-w-80 border border-slate-300 bg-white px-4 py-3" list="container-ledger-options" placeholder="コンテナ番号・カゴ・貸出備品を検索" value={ledgerAssetQuery} onChange={(event) => selectLedgerAsset(event.target.value)} />
+              <datalist id="container-ledger-options">{assetOptions.map((item) => <option key={item.id} value={item.label}>{item.kind === 'quantity' ? item.category : item.sizeLabel || 'コンテナ'}</option>)}</datalist>
             </label>
             <button type="button" className="inline-flex items-center justify-center gap-2 bg-emerald-800 px-5 py-3 font-black text-white" onClick={() => printSheet('container-ledger')}><Printer className="h-5 w-5" />A4 PDF・印刷</button>
           </div>
         </div>
         {sheetLoading ? <p className="no-print text-sm font-bold text-emerald-800">帳票データを読み込み中です…</p> : null}
         <div className={`paper-sheet paper-portrait ${printTarget === 'container-ledger' ? 'print-target' : ''}`}>
-          <div className="paper-title-row"><p>No. <span>{selectedAsset?.label.replace('番', '')}</span></p><h2>コンテナ管理表</h2></div>
+          <div className="paper-title-row"><p>{selectedLedgerOption?.kind === 'quantity' ? '種類' : 'No.'} <span>{selectedLedgerOption?.label.replace('番', '') ?? ''}</span></p><h2>コンテナ管理表</h2></div>
           <table className="paper-table container-ledger-table">
-            <thead><tr><th>設置年月日</th><th>回収年月日</th><th>排出事業者名</th><th>現場名</th></tr></thead>
+            <thead><tr><th>設置年月日</th><th>回収年月日</th><th>排出事業者名</th><th>現場名</th><th>台数</th></tr></thead>
             <tbody>{Array.from({ length: Math.max(24, ledgerRows.length) }, (_, index) => {
               const report = ledgerRows[index]
-              return <tr key={report?.id ?? `empty-${index}`}><td>{report?.installAssetId === ledgerAssetId ? formatDate(report.workDate) : ''}</td><td>{report?.collectAssetId === ledgerAssetId ? formatDate(report.workDate) : ''}</td><td>{report?.companyName ?? ''}</td><td>{report?.siteName ?? ''}</td></tr>
+              return <tr key={report?.id ?? `empty-${index}`}><td>{report ? formatDate(report.installedOn) : ''}</td><td>{report?.collectedOn ? formatDate(report.collectedOn) : ''}</td><td>{report?.companyName ?? ''}</td><td>{report?.siteName ?? ''}</td><td>{report?.quantity ?? ''}</td></tr>
             })}</tbody>
           </table>
         </div>
@@ -1239,8 +1543,8 @@ export function ContainerManagement() {
         <div className="no-print panel rounded-none p-5">
           <div className="grid gap-4 md:grid-cols-[1fr_180px_auto] md:items-end">
             <label className="block text-sm font-bold text-slate-700">排出事業者名
-              <input className="mt-2 block w-full border border-slate-300 bg-white px-4 py-3" list="history-company-options" placeholder="事業者名を入力して検索" value={historyCompany} onChange={(event) => { const value = event.target.value; setHistoryCompany(value); setHistoryRows([]); if (!value.trim()) setCompanyOptions([]) }} />
-              <datalist id="history-company-options">{companyOptions.map((company) => <option key={company} value={company} />)}</datalist>
+              <input className="mt-2 block w-full border border-slate-300 bg-white px-4 py-3" list="history-company-options" placeholder="顧客番号・名称・カナで検索" value={historyCompany} onChange={(event) => selectHistoryCustomer(event.target.value)} />
+              <datalist id="history-company-options">{companyOptions.map((company) => <option key={company.id} value={customerOption(company)} />)}</datalist>
             </label>
             <label className="block text-sm font-bold text-slate-700">管理年
               <select className="mt-2 block w-full border border-slate-300 bg-white px-4 py-3" value={historyYear} onChange={(event) => { setHistoryYear(event.target.value); setHistoryRows([]) }}>{years.map((year) => <option key={year} value={year}>{year}年</option>)}</select>
@@ -1251,19 +1555,19 @@ export function ContainerManagement() {
         </div>
         {sheetLoading ? <p className="no-print text-sm font-bold text-emerald-800">帳票データを読み込み中です…</p> : null}
         <div className={`paper-sheet paper-portrait ${printTarget === 'collection-history' ? 'print-target' : ''}`}>
-          <div className="collection-heading"><div><span>排出事業者名</span><strong>{historyCompany}</strong></div><h2>収集履歴</h2><p>{historyYear}年</p></div>
+          <div className="collection-heading"><div><span>排出事業者名</span><strong>{historyHeadingCompany}</strong></div><h2>収集履歴</h2><p>{historyYear}年</p></div>
           <table className="paper-table collection-table">
             <colgroup><col style={{ width: '13%' }} /><col style={{ width: '23%' }} /><col style={{ width: '12%' }} /><col style={{ width: '8%' }} /><col style={{ width: '8%' }} /><col style={{ width: '36%' }} /></colgroup>
             <thead><tr><th rowSpan={2}>収集年月日</th><th rowSpan={2}>現場名（工事件名）及び住所</th><th rowSpan={2}>運搬者</th><th colSpan={2}>コンテナ番号</th><th rowSpan={2}>品目・数量及び処分先・備考</th></tr><tr><th>設置</th><th>回収</th></tr></thead>
             <tbody>{Array.from({ length: Math.max(18, historyRows.length) }, (_, index) => {
               const report = historyRows[index]
-              const installLabel = report?.assetType === 'カゴ' && report.basketInstallCount
+              const installLabel = report && isQuantityAssetType(report.assetType) && report.basketInstallCount
                 ? `${report.sizeLabel || 'カゴ'}×${report.basketInstallCount}`
                 : report?.installAssetLabel?.replace('番', '') ?? ''
-              const collectLabel = report?.assetType === 'カゴ' && report.basketCollectCount
+              const collectLabel = report && isQuantityAssetType(report.assetType) && report.basketCollectCount
                 ? `${report.sizeLabel || 'カゴ'}×${report.basketCollectCount}`
                 : report?.collectAssetLabel?.replace('番', '') ?? ''
-              return <tr key={report?.id ?? `empty-${index}`}><td>{report ? formatDate(report.workDate) : ''}</td><td>{report?.siteName ?? ''}</td><td>{report?.driverName ?? ''}</td><td>{installLabel}</td><td>{collectLabel}</td><td>{report?.quantity ?? ''}{report?.note && report.note !== report.quantity ? ` ${report.note}` : ''}</td></tr>
+              return <tr key={report?.id ?? `empty-${index}`}><td>{report ? formatDate(report.workDate) : ''}</td><td>{report?.siteName ?? ''}</td><td>{report?.driverName ?? ''}</td><td>{installLabel}</td><td>{collectLabel}</td><td className="whitespace-pre-wrap">{report?.note ?? report?.quantity ?? ''}</td></tr>
             })}</tbody>
           </table>
         </div>

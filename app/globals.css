@@ -133,9 +133,10 @@ textarea {
 }
 
 .container-ledger-table th:nth-child(1),
-.container-ledger-table th:nth-child(2) { width: 23%; }
+.container-ledger-table th:nth-child(2) { width: 19%; }
 .container-ledger-table th:nth-child(3) { width: 27%; }
 .container-ledger-table th:nth-child(4) { width: 27%; }
+.container-ledger-table th:nth-child(5) { width: 8%; }
 .container-ledger-table tbody tr { height: 36px; }
 
 .collection-heading {
