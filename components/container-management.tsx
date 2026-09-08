@@ -238,6 +238,7 @@ export function ContainerManagement() {
   const [message, setMessage] = useState('')
   const [companyQuery, setCompanyQuery] = useState('')
   const [containerQuery, setContainerQuery] = useState('')
+  const [selectedThresholdId, setSelectedThresholdId] = useState('')
   const [activeTab, setActiveTab] = useState<AppTab>('daily')
   const [ledgerAssetId, setLedgerAssetId] = useState('')
   const [ledgerAssetQuery, setLedgerAssetQuery] = useState('')
@@ -366,6 +367,15 @@ export function ContainerManagement() {
       .sort((a, b) => b.elapsedDays - a.elapsedDays),
     [active],
   )
+  const selectedThreshold = stored.thresholds.find((threshold) => threshold.id === selectedThresholdId)
+  const selectedLongTerm = selectedThreshold
+    ? longTerm.filter((item) => item.elapsedDays >= selectedThreshold.days)
+    : []
+
+  function selectLongTermThreshold(thresholdId: string) {
+    setSelectedThresholdId(thresholdId)
+    window.setTimeout(() => document.getElementById('long-term-filter-results')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0)
+  }
   const searchResults = useMemo(() => {
     if (containerQuery.trim()) return active.filter((item) => normalize(item.assetLabel).includes(normalize(containerQuery)))
     if (companyQuery.trim()) return active.filter((item) => {
@@ -1359,15 +1369,21 @@ export function ContainerManagement() {
       {activeTab === 'daily' ? <>
       <section className="grid gap-4 md:grid-cols-3">
         {stored.thresholds.map((threshold) => (
-          <div key={threshold.id} className="panel rounded-none p-5">
+          <button key={threshold.id} type="button" aria-pressed={selectedThresholdId === threshold.id} onClick={() => selectLongTermThreshold(threshold.id)} className={`panel rounded-none p-5 text-left transition hover:-translate-y-0.5 hover:border-rose-400 hover:shadow-md focus:outline-none focus:ring-4 focus:ring-rose-200 ${selectedThresholdId === threshold.id ? 'border-rose-600 bg-rose-50 ring-2 ring-rose-600' : ''}`}>
             <div className="flex items-start justify-between">
               <div><p className="text-sm font-bold text-rose-700">長期設置コンテナ</p><p className="mt-2 text-4xl font-black">{longTerm.filter((item) => item.elapsedDays >= threshold.days).length}件</p></div>
               <AlertTriangle className="h-8 w-8 text-rose-700" />
             </div>
-            <p className="mt-4 text-sm font-bold text-slate-700">{threshold.label}</p>
-          </div>
+            <p className="mt-4 text-sm font-bold text-slate-700">{threshold.label}</p><p className="mt-2 text-xs font-bold text-rose-700">クリックして対象一覧を表示</p>
+          </button>
         ))}
       </section>
+
+      {selectedThreshold ? <section id="long-term-filter-results" className="panel scroll-mt-5 rounded-none border-l-8 border-rose-600 p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-xl font-black">{selectedThreshold.label}の長期設置コンテナ</h2><p className="mt-2 text-sm text-slate-600">該当 {selectedLongTerm.length}件を、設置期間が長い順に表示しています。</p></div><button type="button" className="inline-flex items-center gap-2 border border-slate-300 bg-white px-4 py-2 text-sm font-bold" onClick={() => setSelectedThresholdId('')}><X className="h-4 w-4" />一覧を閉じる</button></div>
+        <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[760px] text-sm"><thead className="bg-rose-50"><tr>{['経過', '番号', '排出事業者名', '現場名', '設置日'].map((title) => <th key={title} className="border border-slate-200 px-3 py-3 text-left">{title}</th>)}</tr></thead><tbody>{selectedLongTerm.map((item) => <tr key={item.id}><td className="border border-slate-200 px-3 py-3 font-black text-rose-700">{item.elapsedDays}日</td><td className="border border-slate-200 px-3 py-3 font-bold">{item.assetLabel}</td><td className="border border-slate-200 px-3 py-3">{item.companyName}</td><td className="border border-slate-200 px-3 py-3">{item.siteName}</td><td className="border border-slate-200 px-3 py-3">{formatDate(item.installedOn)}</td></tr>)}</tbody></table></div>
+        {!selectedLongTerm.length ? <p className="mt-4 bg-slate-50 px-4 py-5 text-center text-sm font-bold text-slate-600">該当するコンテナはありません。</p> : null}
+      </section> : null}
 
       <form className="panel rounded-none p-5" onSubmit={submit}>
         <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
