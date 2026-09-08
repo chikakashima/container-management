@@ -54,6 +54,7 @@ type LedgerOption = {
 
 type CustomerEditDraft = Pick<CustomerMaster, 'id' | 'customerCode' | 'name' | 'nameKana' | 'previousName'>
 type SiteEditDraft = Pick<SiteMaster, 'id' | 'siteCode' | 'name' | 'nameKana'>
+type ItemTypeEditDraft = Pick<QuantityItemMaster, 'id' | 'category' | 'name'>
 
 function today() {
   const date = new Date()
@@ -266,6 +267,7 @@ export function ContainerManagement() {
   const [driverMasterName, setDriverMasterName] = useState('')
   const [itemCategory, setItemCategory] = useState<QuantityAssetType>('カゴ')
   const [itemTypeName, setItemTypeName] = useState('')
+  const [itemTypeEdit, setItemTypeEdit] = useState<ItemTypeEditDraft | null>(null)
   const [masterQuery, setMasterQuery] = useState('')
   const [masterMessage, setMasterMessage] = useState('')
   const [customerSort, setCustomerSort] = useState<'code' | 'kana'>('code')
@@ -348,7 +350,7 @@ export function ContainerManagement() {
       setCustomers(customersResult.data.map((item) => ({ id: String(item.id), customerCode: String(item.customer_code), name: String(item.name), nameKana: String(item.name_kana), previousName: String(item.previous_name ?? '') })))
       setSites(sitesResult.data.map((item) => ({ id: String(item.id), customerId: String(item.customer_id), siteCode: String(item.site_code), name: String(item.name), nameKana: String(item.name_kana) })))
       setBasketBalances(basketResult.data.map((item) => ({ id: String(item.id), customerId: String(item.customer_id), siteId: String(item.site_id), companyName: String(item.company_name), siteName: String(item.site_name), itemCategory: item.item_category as QuantityAssetType, basketType: String(item.basket_type), quantity: Number(item.quantity) })))
-      setDrivers(driversResult.data.map((item) => ({ id: String(item.id), name: String(item.name) })).sort((a, b) => a.name.localeCompare(b.name, 'ja')))
+      setDrivers(driversResult.data.map((item) => ({ id: String(item.id), name: String(item.name) })).filter((item) => item.name !== '初期登録').sort((a, b) => a.name.localeCompare(b.name, 'ja')))
       setItemTypes(itemTypesResult.data.map((item) => ({ id: String(item.id), category: item.category as QuantityAssetType, name: String(item.name) })).sort((a, b) => a.name.localeCompare(b.name, 'ja', { numeric: true })))
     }
     setStored({ assignments, reports: [], thresholds: longTermThresholds })
@@ -1107,6 +1109,81 @@ export function ContainerManagement() {
     setMasterMessage(`${itemCategory}の種類を登録しました。`)
   }
 
+  async function deleteDriver(driver: DriverMaster) {
+    setErrors([])
+    setMasterMessage('')
+    if (!window.confirm(`ドライバー「${driver.name}」を選択肢から削除します。\n過去の日報に記録された氏名は残ります。削除してよろしいですか？`)) return
+    setLoading(true)
+    const result = await supabase.from('container_drivers').delete().eq('id', driver.id)
+    if (result.error) {
+      setErrors([`ドライバーを削除できませんでした：${result.error.message}`])
+      setLoading(false)
+      return
+    }
+    if (driverName === driver.name) setDriverName('')
+    await loadFromSupabase()
+    setMasterMessage(`ドライバー「${driver.name}」を削除しました。`)
+  }
+
+  function startItemTypeEdit(item: QuantityItemMaster) {
+    setItemTypeEdit({ id: item.id, category: item.category, name: item.name })
+    window.setTimeout(() => document.getElementById('item-type-edit-form')?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 0)
+  }
+
+  async function saveItemTypeEdit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!itemTypeEdit) return
+    const name = itemTypeEdit.name.trim()
+    if (!name) {
+      setErrors(['種類名を入力してください。'])
+      return
+    }
+    setErrors([])
+    setMasterMessage('')
+    setLoading(true)
+    const result = await supabase.rpc('rename_container_item_type', {
+      p_item_type_id: itemTypeEdit.id,
+      p_category: itemTypeEdit.category,
+      p_name: name,
+    })
+    if (result.error) {
+      setErrors([`種類を修正できませんでした：${result.error.message}`])
+      setLoading(false)
+      return
+    }
+    setItemTypeEdit(null)
+    await loadFromSupabase()
+    setMasterMessage(`種類名を「${name}」へ変更しました。既存の台数・履歴・管理表にも反映されています。`)
+  }
+
+  async function deleteItemType(item: QuantityItemMaster) {
+    setErrors([])
+    setMasterMessage('')
+    if (!window.confirm(`${item.category}「${item.name}」を削除します。\n使用中または履歴がある種類は削除できません。削除してよろしいですか？`)) return
+    setLoading(true)
+    const result = await supabase.rpc('delete_container_item_type', { p_item_type_id: item.id })
+    if (result.error) {
+      setErrors([`種類を削除できませんでした：${result.error.message}`])
+      setLoading(false)
+      return
+    }
+    if (itemTypeEdit?.id === item.id) setItemTypeEdit(null)
+    await loadFromSupabase()
+    setMasterMessage(`${item.category}「${item.name}」を削除しました。`)
+  }
+
+  function startCustomerEdit(customer: CustomerMaster) {
+    setCustomerEdit({ id: customer.id, customerCode: customer.customerCode, name: customer.name, nameKana: customer.nameKana, previousName: customer.previousName })
+    setSiteEdit(null)
+    window.setTimeout(() => document.getElementById('customer-edit-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0)
+  }
+
+  function startSiteEdit(site: SiteMaster) {
+    setSiteEdit({ id: site.id, siteCode: site.siteCode, name: site.name, nameKana: site.nameKana })
+    setCustomerEdit(null)
+    window.setTimeout(() => document.getElementById('site-edit-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0)
+  }
+
   async function saveCustomerEdit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!customerEdit) return
@@ -1337,7 +1414,7 @@ export function ContainerManagement() {
                 <td className="border border-slate-300 p-2">{isQuantityEntry(row)
                   ? <input type="number" min="0" step="1" inputMode="numeric" className="w-full min-w-24 border border-slate-200 px-3 py-3" placeholder="台数" value={row.basketCollectCount} onChange={(event) => updateRow(row.id, { basketCollectCount: event.target.value })} />
                   : <input autoCapitalize="characters" className="w-full min-w-28 border border-slate-200 px-3 py-3" placeholder="210 / M003" value={assetIdentifier(row.collectAssetId)} onChange={(event) => updateRow(row.id, { collectAssetId: normalizeAssetIdentifier(event.target.value) })} />}</td>
-                <td className="border border-slate-300 p-2"><textarea className="min-h-12 w-full min-w-52 border border-slate-200 px-3 py-3" placeholder="例：金属くず 310kg（自動車部品）" value={row.quantityNote} onChange={(event) => updateRow(row.id, { quantityNote: event.target.value })} /></td>
+                <td className="border border-slate-300 p-2"><textarea className="min-h-12 w-full min-w-52 whitespace-pre-wrap border border-slate-200 px-3 py-3" placeholder="例：金属くず 310kg（自動車部品）" value={row.quantityNote} onChange={(event) => updateRow(row.id, { quantityNote: event.target.value })} /><p className="mt-1 text-xs text-slate-500">文字数制限なし・改行も帳票へ反映</p></td>
                 <td className="border border-slate-300 px-2 py-4 text-center"><span className={`inline-flex px-3 py-1 text-xs font-black ${typeColor(type)}`}>{type}</span></td>
                 <td className="border border-slate-300 p-2"><button type="button" className="p-3 text-slate-400 hover:text-rose-700" onClick={() => setRows((current) => current.length === 1 ? [emptyRow()] : current.filter((item) => item.id !== row.id))} aria-label="行を削除"><Trash2 className="h-5 w-5" /></button></td>
               </tr>
@@ -1415,13 +1492,26 @@ export function ContainerManagement() {
             <button type="submit" disabled={loading || !masterReady} className="mt-5 w-full bg-emerald-800 px-4 py-3 font-black text-white disabled:opacity-50">種類を追加</button>
           </form>
         </div>
-        {customerEdit ? <form className="panel rounded-none border-l-8 border-amber-600 p-5" onSubmit={saveCustomerEdit}>
+        <section className="panel rounded-none p-5">
+          <h3 className="text-lg font-black">ドライバー・台数管理の登録済み一覧</h3>
+          <p className="mt-2 text-sm text-slate-600">誤って追加したドライバーは削除できます。種類は名称・区分の修正、または未使用の場合に削除できます。</p>
+          <div className="mt-5 grid gap-6 lg:grid-cols-2">
+            <div><h4 className="font-black text-slate-800">ドライバー</h4><div className="mt-3 flex flex-wrap gap-2">{drivers.map((driver) => <span key={driver.id} className="inline-flex items-center gap-2 border border-slate-300 bg-white px-3 py-2 text-sm"><span>{driver.name}</span><button type="button" className="text-rose-700" aria-label={`${driver.name}を削除`} onClick={() => void deleteDriver(driver)}><Trash2 className="h-4 w-4" /></button></span>)}</div></div>
+            <div><h4 className="font-black text-slate-800">カゴ・貸出備品の種類</h4><div className="mt-3 space-y-2">{itemTypes.map((item) => <div key={item.id} className="flex items-center justify-between gap-3 border border-slate-200 bg-white px-3 py-2 text-sm"><span><strong>{item.category}</strong>｜{item.name}</span><span className="flex shrink-0 gap-2"><button type="button" className="inline-flex items-center gap-1 font-black text-amber-800" onClick={() => startItemTypeEdit(item)}><PencilLine className="h-4 w-4" />修正</button><button type="button" className="inline-flex items-center gap-1 font-black text-rose-700" onClick={() => void deleteItemType(item)}><Trash2 className="h-4 w-4" />削除</button></span></div>)}</div></div>
+          </div>
+        </section>
+        {itemTypeEdit ? <form id="item-type-edit-form" className="panel scroll-mt-5 rounded-none border-l-8 border-amber-600 bg-amber-50 p-5" onSubmit={saveItemTypeEdit}>
+          <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-lg font-black text-amber-950">種類を修正</h3><p className="mt-2 text-sm text-amber-900">既存の台数・履歴・管理表も新しい名称へ統一します。</p></div><button type="button" className="inline-flex items-center gap-2 border border-amber-700 bg-white px-4 py-2 text-sm font-bold text-amber-900" onClick={() => setItemTypeEdit(null)}><X className="h-4 w-4" />閉じる</button></div>
+          <div className="mt-4 grid gap-4 sm:grid-cols-[160px_1fr]"><label className="text-sm font-bold">区分<select className="mt-2 w-full border border-amber-400 bg-white px-4 py-3" value={itemTypeEdit.category} onChange={(event) => setItemTypeEdit({ ...itemTypeEdit, category: event.target.value as QuantityAssetType })}><option value="カゴ">カゴ</option><option value="貸出備品">貸出備品</option></select></label><label className="text-sm font-bold">種類名<input required className="mt-2 w-full border border-amber-400 bg-white px-4 py-3" value={itemTypeEdit.name} onChange={(event) => setItemTypeEdit({ ...itemTypeEdit, name: event.target.value })} /></label></div>
+          <button type="submit" disabled={loading} className="mt-5 bg-amber-700 px-6 py-3 font-black text-white disabled:opacity-50">種類の修正を保存</button>
+        </form> : null}
+        {customerEdit ? <form id="customer-edit-form" className="panel scroll-mt-5 rounded-none border-l-8 border-amber-600 bg-amber-50 p-5" onSubmit={saveCustomerEdit}>
           <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-lg font-black">排出事業者を修正</h3><p className="mt-2 text-sm text-slate-600">社名を変更すると、変更後の入力は「現社名（旧社名：直前の社名）」で保存されます。過去の履歴は変更しません。</p></div><button type="button" className="inline-flex items-center gap-2 border border-slate-300 px-4 py-2 text-sm font-bold" onClick={() => setCustomerEdit(null)}><X className="h-4 w-4" />閉じる</button></div>
           <div className="mt-4 grid gap-4 md:grid-cols-3"><label className="text-sm font-bold">顧客番号<input required className="mt-2 w-full border border-slate-300 px-4 py-3" value={customerEdit.customerCode} onChange={(event) => setCustomerEdit({ ...customerEdit, customerCode: event.target.value })} /></label><label className="text-sm font-bold">排出事業者名<input required className="mt-2 w-full border border-slate-300 px-4 py-3" value={customerEdit.name} onChange={(event) => setCustomerEdit({ ...customerEdit, name: event.target.value })} /></label><label className="text-sm font-bold">カナ<input className="mt-2 w-full border border-slate-300 px-4 py-3" value={customerEdit.nameKana} onChange={(event) => setCustomerEdit({ ...customerEdit, nameKana: event.target.value })} /></label></div>
           {customerEdit.previousName ? <p className="mt-3 text-sm text-slate-600">現在保持している旧社名：{customerEdit.previousName}</p> : null}
           <button type="submit" disabled={loading} className="mt-5 bg-emerald-800 px-6 py-3 font-black text-white disabled:opacity-50">修正を保存</button>
         </form> : null}
-        {siteEdit ? <form className="panel rounded-none border-l-8 border-amber-600 p-5" onSubmit={saveSiteEdit}>
+        {siteEdit ? <form id="site-edit-form" className="panel scroll-mt-5 rounded-none border-l-8 border-amber-600 bg-amber-50 p-5" onSubmit={saveSiteEdit}>
           <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-lg font-black">現場を修正</h3><p className="mt-2 text-sm text-slate-600">変更後に登録する日報から、新しい現場名を使用します。</p></div><button type="button" className="inline-flex items-center gap-2 border border-slate-300 px-4 py-2 text-sm font-bold" onClick={() => setSiteEdit(null)}><X className="h-4 w-4" />閉じる</button></div>
           <div className="mt-4 grid gap-4 md:grid-cols-3"><label className="text-sm font-bold">現場番号<input required className="mt-2 w-full border border-slate-300 px-4 py-3" value={siteEdit.siteCode} onChange={(event) => setSiteEdit({ ...siteEdit, siteCode: event.target.value })} /></label><label className="text-sm font-bold">現場名<input required className="mt-2 w-full border border-slate-300 px-4 py-3" value={siteEdit.name} onChange={(event) => setSiteEdit({ ...siteEdit, name: event.target.value })} /></label><label className="text-sm font-bold">カナ<input className="mt-2 w-full border border-slate-300 px-4 py-3" value={siteEdit.nameKana} onChange={(event) => setSiteEdit({ ...siteEdit, nameKana: event.target.value })} /></label></div>
           <button type="submit" disabled={loading} className="mt-5 bg-emerald-800 px-6 py-3 font-black text-white disabled:opacity-50">修正を保存</button>
@@ -1447,7 +1537,7 @@ export function ContainerManagement() {
             const customerSites = sitesByCode.filter((site) => site.customerId === customer.id)
             const expanded = expandedCustomerIds.has(customer.id)
             const visibleSites = expanded ? customerSites : customerSites.slice(0, 3)
-            return <tr key={customer.id} className="align-top"><td className="border border-slate-200 px-3 py-3 font-bold"><p>{customer.customerCode}</p><button type="button" className="mt-3 inline-flex items-center gap-1 border border-emerald-700 px-2 py-1 text-xs font-black text-emerald-800" onClick={() => { setCustomerEdit({ id: customer.id, customerCode: customer.customerCode, name: customer.name, nameKana: customer.nameKana, previousName: customer.previousName }); setSiteEdit(null) }}><PencilLine className="h-3 w-3" />修正</button></td><td className="border border-slate-200 px-3 py-3 break-words"><p>{customer.name}</p>{customer.previousName ? <p className="mt-1 text-xs text-slate-500">旧社名：{customer.previousName}</p> : null}</td><td className="border border-slate-200 px-3 py-3 break-words">{customer.nameKana}</td><td className="border border-slate-200 px-3 py-3">{visibleSites.length ? <div className="space-y-2">{visibleSites.map((site) => <div key={site.id} className="flex items-start justify-between gap-3 border-b border-slate-100 pb-2 last:border-0"><p><strong>{site.siteCode}</strong> {site.name}{site.nameKana ? <span className="ml-2 text-xs text-slate-500">（{site.nameKana}）</span> : null}</p><button type="button" className="shrink-0 text-xs font-black text-emerald-800 underline" onClick={() => { setSiteEdit({ id: site.id, siteCode: site.siteCode, name: site.name, nameKana: site.nameKana }); setCustomerEdit(null) }}>現場修正</button></div>)}</div> : '未登録'}{customerSites.length > 3 ? <button type="button" className="mt-3 inline-flex items-center gap-1 text-xs font-black text-emerald-800 underline" onClick={() => setExpandedCustomerIds((current) => { const next = new Set(current); if (next.has(customer.id)) next.delete(customer.id); else next.add(customer.id); return next })}>{expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}{expanded ? '3件表示に戻す' : `残り${customerSites.length - 3}件を表示`}</button> : null}</td></tr>
+            return <tr key={customer.id} className="align-top"><td className="border border-slate-200 px-3 py-3 font-bold"><p>{customer.customerCode}</p><button type="button" className="mt-3 inline-flex items-center gap-1 bg-amber-600 px-3 py-2 text-xs font-black text-white shadow-sm hover:bg-amber-700" onClick={() => startCustomerEdit(customer)}><PencilLine className="h-3 w-3" />排出事業者を修正</button></td><td className="border border-slate-200 px-3 py-3 break-words"><p>{customer.name}</p>{customer.previousName ? <p className="mt-1 text-xs text-slate-500">旧社名：{customer.previousName}</p> : null}</td><td className="border border-slate-200 px-3 py-3 break-words">{customer.nameKana}</td><td className="border border-slate-200 px-3 py-3">{visibleSites.length ? <div className="space-y-2">{visibleSites.map((site) => <div key={site.id} className="flex items-start justify-between gap-3 border-b border-slate-100 pb-2 last:border-0"><p><strong>{site.siteCode}</strong> {site.name}{site.nameKana ? <span className="ml-2 text-xs text-slate-500">（{site.nameKana}）</span> : null}</p><button type="button" className="shrink-0 bg-amber-600 px-3 py-2 text-xs font-black text-white shadow-sm hover:bg-amber-700" onClick={() => startSiteEdit(site)}><PencilLine className="mr-1 inline h-3 w-3" />現場を修正</button></div>)}</div> : '未登録'}{customerSites.length > 3 ? <button type="button" className="mt-3 inline-flex items-center gap-1 text-xs font-black text-emerald-800 underline" onClick={() => setExpandedCustomerIds((current) => { const next = new Set(current); if (next.has(customer.id)) next.delete(customer.id); else next.add(customer.id); return next })}>{expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}{expanded ? '3件表示に戻す' : `残り${customerSites.length - 3}件を表示`}</button> : null}</td></tr>
           })}</tbody></table></div>
           {!filteredCustomers.length ? <p className="mt-4 bg-slate-50 px-4 py-5 text-center text-sm font-bold text-slate-600">該当する排出事業者・現場はありません。</p> : null}
         </section>
