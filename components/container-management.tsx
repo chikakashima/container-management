@@ -430,9 +430,9 @@ export function ContainerManagement() {
       ].some((value) => normalize(value).includes(query))
     })
   }, [masterQuery, sites, sortedCustomers])
-  const correctionCustomer = correctionDraft ? customers.find((customer) => customer.id === correctionDraft.customerId) : undefined
-  const correctionSite = correctionDraft ? sites.find((site) => site.id === correctionDraft.siteId) : undefined
-  const correctionSiteOptions = correctionDraft ? sitesByCode.filter((site) => site.customerId === correctionDraft.customerId) : []
+  const correctionSiteOptions = correctionDraft
+    ? sitesByCode.filter((site) => site.customerId === correctionDraft.customerId).reverse()
+    : []
   const historyHeadingCompany = historyRows.at(-1)?.companyName ?? historyCompany
 
   const quantityLedgerOptions = useMemo<LedgerOption[]>(() => itemTypes.map((item) => ({
@@ -611,25 +611,20 @@ export function ContainerManagement() {
   }
 
   function updateCustomer(rowId: string, value: string) {
-    const exact = customers.find((customer) => value === customerOption(customer) || value === customer.name || value === customer.customerCode || value === customer.nameKana || value === customerDisplayName(customer))
+    const exact = customers.find((customer) => value === customerOption(customer))
     updateRow(rowId, exact
       ? { customerId: exact.id, companyName: customerDisplayName(exact), siteId: '', siteName: '' }
       : { customerId: '', companyName: value, siteId: '', siteName: '' })
   }
 
   function updateSite(rowId: string, customerId: string, value: string) {
-    const exact = sites.find((site) => site.customerId === customerId && (value === siteOption(site) || value === site.name || value === site.siteCode || value === site.nameKana))
+    const exact = sites.find((site) => site.customerId === customerId && value === siteOption(site))
     updateRow(rowId, exact ? { siteId: exact.id, siteName: exact.name } : { siteId: '', siteName: value })
   }
 
   function selectSiteCustomer(value: string) {
     setSiteCustomerQuery(value)
-    const exact = customers.find((customer) =>
-      value === customerOption(customer)
-      || value === customer.customerCode
-      || value === customer.name
-      || value === customer.nameKana,
-    )
+    const exact = customers.find((customer) => value === customerOption(customer))
     setSiteCustomerId(exact?.id ?? '')
     if (exact) setSiteCustomerQuery(customerOption(exact))
   }
@@ -639,20 +634,14 @@ export function ContainerManagement() {
   }
 
   function updateCorrectionCustomer(value: string) {
-    const exact = customers.find((customer) =>
-      value === customerOption(customer)
-      || value === customer.customerCode
-      || value === customer.name
-      || value === customer.nameKana,
-    )
+    const exact = customers.find((customer) => value === customerOption(customer))
     updateCorrection(exact
       ? { customerId: exact.id, companyName: customerDisplayName(exact), siteId: '', siteName: '' }
       : { customerId: '', companyName: value, siteId: '', siteName: '' })
   }
 
   function updateCorrectionSite(customerId: string, value: string) {
-    const exact = sites.find((site) => site.customerId === customerId
-      && (value === siteOption(site) || value === site.siteCode || value === site.name || value === site.nameKana))
+    const exact = sites.find((site) => site.customerId === customerId && value === siteOption(site))
     updateCorrection(exact ? { siteId: exact.id, siteName: exact.name } : { siteId: '', siteName: value })
   }
 
@@ -1408,20 +1397,18 @@ export function ContainerManagement() {
             </tr></thead>
             <tbody>{rows.map((row, index) => {
               const type = workType(row)
-              const selectedCustomer = customers.find((customer) => customer.id === row.customerId)
-              const selectedSite = sites.find((site) => site.id === row.siteId)
-              const availableSites = sitesByCode.filter((site) => site.customerId === row.customerId)
+              const availableSites = sitesByCode.filter((site) => site.customerId === row.customerId).reverse()
               const availableItemTypes = itemTypes.filter((item) => item.category === quantityCategory(row))
               return <tr key={row.id} className="bg-white align-top">
                 <td className="border border-slate-300 px-3 py-4 text-center font-black">{index + 1}</td>
                 <td className="border border-slate-300 p-2"><select className="min-w-36 border border-slate-200 bg-white px-3 py-3" value={row.entryType} onChange={(event) => changeEntryType(row.id, event.target.value as ReportRow['entryType'])}><option value="container">コンテナ</option><option value="basket">カゴ（台数）</option><option value="equipment">貸出備品（台数）</option></select>
                   {isQuantityEntry(row) ? <select className="mt-2 block min-w-36 border border-slate-200 bg-white px-3 py-3" value={row.basketType} onChange={(event) => updateRow(row.id, { basketType: event.target.value })}><option value="">種類を選択</option>{availableItemTypes.map((item) => <option key={item.id} value={item.name}>{item.name}</option>)}</select> : null}</td>
                 <td className="border border-slate-300 p-2">
-                  <input className="w-full min-w-56 border border-slate-200 px-3 py-3" list={`customer-options-${row.id}`} placeholder="番号・名称・カナで検索" value={selectedCustomer ? customerOption(selectedCustomer) : row.companyName} onChange={(event) => updateCustomer(row.id, event.target.value)} />
+                  <input className="w-full min-w-56 border border-slate-200 px-3 py-3" list={`customer-options-${row.id}`} placeholder="番号・名称・カナで検索" value={row.companyName} onChange={(event) => updateCustomer(row.id, event.target.value)} />
                   <datalist id={`customer-options-${row.id}`}>{customersByCode.map((customer) => <option key={customer.id} value={customerOption(customer)} />)}</datalist>
                 </td>
                 <td className="border border-slate-300 p-2">
-                  <input className="w-full min-w-56 border border-slate-200 px-3 py-3" list={`site-options-${row.id}`} placeholder={row.customerId ? '番号・名称・カナで検索' : '先に排出事業者を選択'} value={selectedSite ? siteOption(selectedSite) : row.siteName} onChange={(event) => updateSite(row.id, row.customerId, event.target.value)} />
+                  <input className="w-full min-w-56 border border-slate-200 px-3 py-3" list={`site-options-${row.id}`} placeholder={row.customerId ? '番号・名称・カナで検索' : '先に排出事業者を選択'} value={row.siteName} onChange={(event) => updateSite(row.id, row.customerId, event.target.value)} />
                   <datalist id={`site-options-${row.id}`}>{availableSites.map((site) => <option key={site.id} value={siteOption(site)} />)}</datalist>
                 </td>
                 <td className="border border-slate-300 p-2">{isQuantityEntry(row)
@@ -1586,11 +1573,11 @@ export function ContainerManagement() {
             <label className="text-sm font-bold">日付<input type="date" required className="mt-2 w-full border border-slate-300 px-4 py-3" value={correctionDraft.workDate} onChange={(event) => updateCorrection({ workDate: event.target.value })} /></label>
             <label className="text-sm font-bold">名前（ドライバー）<select required className="mt-2 w-full border border-slate-300 bg-white px-4 py-3" value={correctionDraft.driverName} onChange={(event) => updateCorrection({ driverName: event.target.value })}><option value="">選択してください</option>{drivers.map((driver) => <option key={driver.id} value={driver.name}>{driver.name}</option>)}{correctionDraft.driverName && !drivers.some((driver) => driver.name === correctionDraft.driverName) ? <option value={correctionDraft.driverName}>{correctionDraft.driverName}</option> : null}</select></label>
             <label className="text-sm font-bold">排出事業者
-              <input required className="mt-2 w-full border border-slate-300 px-4 py-3" list="correction-customer-options" placeholder="番号・名称・カナで検索" value={correctionCustomer ? customerOption(correctionCustomer) : correctionDraft.companyName} onChange={(event) => updateCorrectionCustomer(event.target.value)} />
+              <input required className="mt-2 w-full border border-slate-300 px-4 py-3" list="correction-customer-options" placeholder="番号・名称・カナで検索" value={correctionDraft.companyName} onChange={(event) => updateCorrectionCustomer(event.target.value)} />
               <datalist id="correction-customer-options">{customersByCode.map((customer) => <option key={customer.id} value={customerOption(customer)} />)}</datalist>
             </label>
             <label className="text-sm font-bold">現場
-              <input required className="mt-2 w-full border border-slate-300 px-4 py-3" list="correction-site-options" placeholder={correctionDraft.customerId ? '番号・名称・カナで検索' : '先に排出事業者を選択'} value={correctionSite ? siteOption(correctionSite) : correctionDraft.siteName} onChange={(event) => updateCorrectionSite(correctionDraft.customerId, event.target.value)} />
+              <input required className="mt-2 w-full border border-slate-300 px-4 py-3" list="correction-site-options" placeholder={correctionDraft.customerId ? '番号・名称・カナで検索' : '先に排出事業者を選択'} value={correctionDraft.siteName} onChange={(event) => updateCorrectionSite(correctionDraft.customerId, event.target.value)} />
               <datalist id="correction-site-options">{correctionSiteOptions.map((site) => <option key={site.id} value={siteOption(site)} />)}</datalist>
             </label>
           </div>
@@ -1663,7 +1650,7 @@ export function ContainerManagement() {
         <div className={`paper-sheet paper-portrait ${printTarget === 'collection-history' ? 'print-target' : ''}`}>
           <div className="collection-heading"><div><span>排出事業者名</span><strong>{historyHeadingCompany}</strong></div><h2>収集履歴</h2><p>{historyYear}年</p></div>
           <table className="paper-table collection-table">
-            <colgroup><col style={{ width: '13%' }} /><col style={{ width: '23%' }} /><col style={{ width: '12%' }} /><col style={{ width: '8%' }} /><col style={{ width: '8%' }} /><col style={{ width: '36%' }} /></colgroup>
+            <colgroup><col style={{ width: '10%' }} /><col style={{ width: '17%' }} /><col style={{ width: '8%' }} /><col style={{ width: '18%' }} /><col style={{ width: '18%' }} /><col style={{ width: '29%' }} /></colgroup>
             <thead><tr><th rowSpan={2}>収集年月日</th><th rowSpan={2}>現場名（工事件名）及び住所</th><th rowSpan={2}>運搬者</th><th colSpan={2}>コンテナ番号</th><th rowSpan={2}>品目・数量及び処分先・備考</th></tr><tr><th>設置</th><th>回収</th></tr></thead>
             <tbody>{Array.from({ length: Math.max(18, historyRows.length) }, (_, index) => {
               const report = historyRows[index]
