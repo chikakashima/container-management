@@ -88,6 +88,7 @@ textarea {
   grid-template-rows: auto auto;
   row-gap: 8px;
   min-height: 78px;
+  margin-bottom: 10px;
 }
 
 .paper-title-row h2,
@@ -151,6 +152,7 @@ textarea {
   row-gap: 8px;
   align-items: end;
   min-height: 82px;
+  margin-bottom: 10px;
 }
 
 .collection-heading h2 { grid-area: title; }
