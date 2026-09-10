@@ -180,6 +180,10 @@ textarea {
   font-weight: 700;
 }
 
+.collection-table {
+  font-size: 12px;
+}
+
 .collection-table tbody tr { height: 31px; }
 
 .collection-table td:nth-child(1),
