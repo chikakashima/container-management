@@ -1650,7 +1650,7 @@ export function ContainerManagement() {
         <div className={`paper-sheet paper-portrait ${printTarget === 'collection-history' ? 'print-target' : ''}`}>
           <div className="collection-heading"><div><span>排出事業者名</span><strong>{historyHeadingCompany}</strong></div><h2>収集履歴</h2><p>{historyYear}年</p></div>
           <table className="paper-table collection-table">
-            <colgroup><col style={{ width: '10%' }} /><col style={{ width: '17%' }} /><col style={{ width: '8%' }} /><col style={{ width: '18%' }} /><col style={{ width: '18%' }} /><col style={{ width: '29%' }} /></colgroup>
+            <colgroup><col style={{ width: '15%' }} /><col style={{ width: '16%' }} /><col style={{ width: '14%' }} /><col style={{ width: '13%' }} /><col style={{ width: '13%' }} /><col style={{ width: '29%' }} /></colgroup>
             <thead><tr><th rowSpan={2}>収集年月日</th><th rowSpan={2}>現場名（工事件名）及び住所</th><th rowSpan={2}>運搬者</th><th colSpan={2}>コンテナ番号</th><th rowSpan={2}>品目・数量及び処分先・備考</th></tr><tr><th>設置</th><th>回収</th></tr></thead>
             <tbody>{Array.from({ length: Math.max(18, historyRows.length) }, (_, index) => {
               const report = historyRows[index]
