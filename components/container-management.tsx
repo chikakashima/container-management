@@ -298,7 +298,6 @@ export function ContainerManagement() {
   const [historyCompany, setHistoryCompany] = useState('')
   const [historyCustomerId, setHistoryCustomerId] = useState('')
   const [historyYear, setHistoryYear] = useState(String(new Date().getFullYear()))
-  const [printTarget, setPrintTarget] = useState<PrintTarget>(null)
   const [companyOptions, setCompanyOptions] = useState<CustomerMaster[]>([])
   const [assetOptions, setAssetOptions] = useState<LedgerOption[]>([])
   const [ledgerRows, setLedgerRows] = useState<LedgerLifecycleRow[]>([])
@@ -642,16 +641,26 @@ export function ContainerManagement() {
   }, [historyCompany, historyCustomerId, historyYear, session])
 
   function printSheet(target: Exclude<PrintTarget, null>) {
+    const source = document.querySelector<HTMLElement>(`[data-print-sheet="${target}"]`)
+    if (!source) return
+
     document.getElementById('print-page-orientation')?.remove()
+    document.getElementById('print-root')?.remove()
     const pageStyle = document.createElement('style')
     pageStyle.id = 'print-page-orientation'
     pageStyle.textContent = '@media print { @page { size: A4 portrait; margin: 12mm 13mm; } }'
     document.head.appendChild(pageStyle)
 
-    setPrintTarget(target)
+    const printRoot = document.createElement('div')
+    printRoot.id = 'print-root'
+    const sheet = source.cloneNode(true) as HTMLElement
+    sheet.classList.add('print-target')
+    printRoot.appendChild(sheet)
+    document.body.appendChild(printRoot)
+
     const cleanup = () => {
       pageStyle.remove()
-      setPrintTarget(null)
+      printRoot.remove()
     }
     window.addEventListener('afterprint', cleanup, { once: true })
     window.setTimeout(() => {
@@ -1725,7 +1734,7 @@ export function ContainerManagement() {
           </div>
         </div>
         {sheetLoading ? <p className="no-print text-sm font-bold text-emerald-800">帳票データを読み込み中です…</p> : null}
-        <div className={`paper-sheet paper-portrait ${printTarget === 'container-ledger' ? 'print-target' : ''}`}>
+        <div data-print-sheet="container-ledger" className="paper-sheet paper-portrait">
           <div className="paper-title-row"><p>{selectedLedgerOption?.kind === 'quantity' ? '種類' : 'No.'} <span>{selectedLedgerOption?.label.replace('番', '') ?? ''}</span></p><h2>コンテナ管理表</h2></div>
           <table className="paper-table container-ledger-table">
             <thead><tr><th>設置年月日</th><th>回収年月日</th><th>排出事業者名</th><th>現場名</th><th>台数</th></tr></thead>
@@ -1754,7 +1763,7 @@ export function ContainerManagement() {
           <p className="mt-3 text-sm text-slate-600">排出事業者名と年を選ぶと、1年分の収集履歴を紙と同じ形式で保存できます。</p>
         </div>
         {sheetLoading ? <p className="no-print text-sm font-bold text-emerald-800">帳票データを読み込み中です…</p> : null}
-        <div className={`paper-sheet paper-portrait ${printTarget === 'collection-history' ? 'print-target' : ''}`}>
+        <div data-print-sheet="collection-history" className="paper-sheet paper-portrait">
           <div className="collection-heading"><div><span>排出事業者名</span><strong>{historyHeadingCompany}</strong></div><h2>収集履歴</h2><p>{historyYear}年</p></div>
           <table className="paper-table collection-table">
             <colgroup><col style={{ width: '15%' }} /><col style={{ width: '16%' }} /><col style={{ width: '14%' }} /><col style={{ width: '13%' }} /><col style={{ width: '13%' }} /><col style={{ width: '29%' }} /></colgroup>
