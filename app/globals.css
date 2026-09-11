@@ -192,8 +192,8 @@ textarea {
 }
 
 @media print {
-  @page portraitPage { size: A4 portrait; margin: 0; }
-  @page landscapePage { size: A4 landscape; margin: 0; }
+  @page portraitPage { size: A4 portrait; margin: 12mm 13mm; }
+  @page landscapePage { size: A4 landscape; margin: 10mm 11mm; }
 
   body {
     background: #ffffff;
@@ -210,11 +210,11 @@ textarea {
   }
 
   .print-target {
-    position: absolute;
-    inset: 0;
+    position: static;
     display: block !important;
-    width: 210mm !important;
-    min-height: 297mm !important;
+    width: 184mm !important;
+    min-height: 0 !important;
+    overflow: visible !important;
     margin: 0 !important;
     border: 0 !important;
     box-shadow: none !important;
@@ -222,14 +222,14 @@ textarea {
 
   .print-target.paper-portrait {
     page: portraitPage;
-    padding: 12mm 13mm !important;
+    padding: 0 !important;
   }
 
   .print-target.paper-landscape {
     page: landscapePage;
-    width: 297mm !important;
+    width: 275mm !important;
     min-height: 210mm !important;
-    padding: 10mm 11mm !important;
+    padding: 0 !important;
   }
 
   body:has(.print-target.paper-landscape) {
@@ -239,5 +239,14 @@ textarea {
   header,
   .no-print {
     display: none !important;
+  }
+
+  .print-target thead {
+    display: table-header-group;
+  }
+
+  .print-target tr {
+    break-inside: avoid;
+    page-break-inside: avoid;
   }
 }
