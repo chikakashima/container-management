@@ -56,6 +56,32 @@ type CustomerEditDraft = Pick<CustomerMaster, 'id' | 'customerCode' | 'name' | '
 type SiteEditDraft = Pick<SiteMaster, 'id' | 'siteCode' | 'name' | 'nameKana'>
 type ItemTypeEditDraft = Pick<QuantityItemMaster, 'id' | 'category' | 'name'>
 
+type AgingRow = {
+  id: string
+  assetLabel: string
+  assetType: ContainerReport['assetType']
+  companyName: string
+  siteName: string
+  installedOn: string
+  elapsedDays: number
+  quantity: number
+}
+
+const KANA_GROUPS = [
+  { id: '', label: '全て', characters: '' },
+  { id: 'a', label: 'あ', characters: 'アイウエオヴ' },
+  { id: 'ka', label: 'か', characters: 'カキクケコガギグゲゴ' },
+  { id: 'sa', label: 'さ', characters: 'サシスセソザジズゼゾ' },
+  { id: 'ta', label: 'た', characters: 'タチツテトダヂヅデド' },
+  { id: 'na', label: 'な', characters: 'ナニヌネノ' },
+  { id: 'ha', label: 'は', characters: 'ハヒフヘホバビブベボパピプペポ' },
+  { id: 'ma', label: 'ま', characters: 'マミムメモ' },
+  { id: 'ya', label: 'や', characters: 'ヤユヨ' },
+  { id: 'ra', label: 'ら', characters: 'ラリルレロ' },
+  { id: 'wa', label: 'わ', characters: 'ワヲン' },
+  { id: 'other', label: '他', characters: '' },
+] as const
+
 function today() {
   const date = new Date()
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
@@ -109,6 +135,33 @@ function toKatakana(value: string) {
 function kanaCandidate(value: string) {
   const normalized = value.normalize('NFKC')
   return /^[ぁ-ゖァ-ヶー\s　]+$/u.test(normalized) ? toKatakana(normalized) : ''
+}
+
+function matchesKanaGroup(customer: CustomerMaster, groupId: string) {
+  if (!groupId) return true
+  const first = toKatakana(customer.nameKana.trim().normalize('NFKC')).charAt(0)
+  const group = KANA_GROUPS.find((item) => item.id === groupId)
+  if (!group || group.id === 'other') {
+    return !KANA_GROUPS.some((item) => item.characters.includes(first))
+  }
+  return group.characters.includes(first)
+}
+
+type KanaSelectorProps = {
+  value: string
+  onChange: (value: string) => void
+  label?: string
+}
+
+function KanaSelector({ value, onChange, label = 'フリガナの頭文字' }: KanaSelectorProps) {
+  return (
+    <fieldset className="mt-2">
+      <legend className="text-xs font-bold text-slate-600">{label}</legend>
+      <div className="mt-1 flex flex-wrap gap-1">
+        {KANA_GROUPS.map((group) => <button key={group.id || 'all'} type="button" aria-pressed={value === group.id} onClick={() => onChange(group.id)} className={`min-w-9 border px-2 py-1 text-xs font-black ${value === group.id ? 'border-emerald-800 bg-emerald-800 text-white' : 'border-slate-300 bg-white text-slate-700 hover:bg-emerald-50'}`}>{group.label}</button>)}
+      </div>
+    </fieldset>
+  )
 }
 
 function emptyRow(id = `row-${Date.now()}-${Math.random()}`): ReportRow {
@@ -254,6 +307,7 @@ export function ContainerManagement() {
   const [customers, setCustomers] = useState<CustomerMaster[]>([])
   const [sites, setSites] = useState<SiteMaster[]>([])
   const [basketBalances, setBasketBalances] = useState<BasketBalance[]>([])
+  const [quantityReports, setQuantityReports] = useState<ContainerReport[]>([])
   const [drivers, setDrivers] = useState<DriverMaster[]>([])
   const [itemTypes, setItemTypes] = useState<QuantityItemMaster[]>([])
   const [masterReady, setMasterReady] = useState(true)
@@ -272,6 +326,9 @@ export function ContainerManagement() {
   const [masterQuery, setMasterQuery] = useState('')
   const [masterMessage, setMasterMessage] = useState('')
   const [customerSort, setCustomerSort] = useState<'code' | 'kana'>('code')
+  const [dailyKanaGroups, setDailyKanaGroups] = useState<Record<string, string>>({})
+  const [historyKanaGroup, setHistoryKanaGroup] = useState('')
+  const [masterKanaGroup, setMasterKanaGroup] = useState('')
   const [expandedCustomerIds, setExpandedCustomerIds] = useState<Set<string>>(() => new Set())
   const [customerEdit, setCustomerEdit] = useState<CustomerEditDraft | null>(null)
   const [siteEdit, setSiteEdit] = useState<SiteEditDraft | null>(null)
@@ -338,12 +395,26 @@ export function ContainerManagement() {
       }
       return { data, error: null }
     }
-    const [customersResult, sitesResult, basketResult, driversResult, itemTypesResult] = await Promise.all([
+    const quantityReportPromise = (async () => {
+      const data: ContainerReport[] = []
+      for (let from = 0; ; from += PAGE_SIZE) {
+        const result = await supabase.from('container_reports').select('*')
+          .in('asset_type', ['カゴ', '貸出備品'])
+          .order('work_date', { ascending: true }).order('entry_order', { ascending: true })
+          .range(from, from + PAGE_SIZE - 1)
+        if (result.error) return { data, error: result.error }
+        data.push(...(result.data ?? []).map(reportFromRow))
+        if ((result.data?.length ?? 0) < PAGE_SIZE) break
+      }
+      return { data, error: null }
+    })()
+    const [customersResult, sitesResult, basketResult, driversResult, itemTypesResult, quantityReportResult] = await Promise.all([
       loadPages('container_customers', 'id,customer_code,name,name_kana,previous_name'),
       loadPages('container_sites', 'id,customer_id,site_code,name,name_kana'),
       loadPages('basket_balances', 'id,customer_id,site_id,company_name,site_name,item_category,basket_type,quantity'),
       loadPages('container_drivers', 'id,name'),
       loadPages('container_item_types', 'id,category,name'),
+      quantityReportPromise,
     ])
     const mastersAvailable = !customersResult.error && !sitesResult.error && !basketResult.error && !driversResult.error && !itemTypesResult.error
     setMasterReady(mastersAvailable)
@@ -354,22 +425,47 @@ export function ContainerManagement() {
       setDrivers(driversResult.data.map((item) => ({ id: String(item.id), name: String(item.name) })).filter((item) => item.name !== '初期登録').sort((a, b) => a.name.localeCompare(b.name, 'ja')))
       setItemTypes(itemTypesResult.data.map((item) => ({ id: String(item.id), category: item.category as QuantityAssetType, name: String(item.name) })).sort((a, b) => a.name.localeCompare(b.name, 'ja', { numeric: true })))
     }
+    if (!quantityReportResult.error) setQuantityReports(quantityReportResult.data)
     setStored({ assignments, reports: [], thresholds: longTermThresholds })
     setLoading(false)
   }
 
   const active = useMemo(() => stored.assignments.filter((item) => !item.collectedOn), [stored.assignments])
-  const longTerm = useMemo(
-    () => active.flatMap((item) => {
+  const longTerm = useMemo<AgingRow[]>(
+    () => active.flatMap((item): AgingRow[] => {
       const elapsedDays = daysFrom(item.installedOn)
-      return elapsedDays === null ? [] : [{ ...item, elapsedDays }]
+      return elapsedDays === null || !item.installedOn ? [] : [{
+        id: item.id, assetLabel: item.assetLabel, assetType: item.assetType,
+        companyName: item.companyName, siteName: item.siteName, installedOn: item.installedOn,
+        elapsedDays, quantity: 1,
+      }]
     })
       .sort((a, b) => b.elapsedDays - a.elapsedDays),
     [active],
   )
+  const quantityAging = useMemo<AgingRow[]>(() => {
+    const grouped = new Map<string, ContainerReport[]>()
+    quantityReports.forEach((report) => {
+      const key = `${report.assetType}:${report.sizeLabel}`
+      grouped.set(key, [...(grouped.get(key) ?? []), report])
+    })
+    return Array.from(grouped.entries()).flatMap(([key, reports]) => {
+      const [assetType, ...labelParts] = key.split(':')
+      const assetLabel = labelParts.join(':')
+      return buildQuantityLedgerRows(reports).flatMap((row): AgingRow[] => {
+        const elapsedDays = row.collectedOn ? null : daysFrom(row.installedOn)
+        return elapsedDays === null || !row.installedOn ? [] : [{
+          id: `quantity-aging:${key}:${row.id}`, assetLabel, assetType: assetType as QuantityAssetType,
+          companyName: row.companyName, siteName: row.siteName, installedOn: row.installedOn,
+          elapsedDays, quantity: row.quantity,
+        }]
+      })
+    }).sort((a, b) => b.elapsedDays - a.elapsedDays)
+  }, [quantityReports])
+  const allAging = useMemo(() => [...longTerm, ...quantityAging].sort((a, b) => b.elapsedDays - a.elapsedDays), [longTerm, quantityAging])
   const selectedThreshold = stored.thresholds.find((threshold) => threshold.id === selectedThresholdId)
   const selectedLongTerm = selectedThreshold
-    ? longTerm.filter((item) => item.elapsedDays >= selectedThreshold.days)
+    ? allAging.filter((item) => item.elapsedDays >= selectedThreshold.days)
     : []
 
   function selectLongTermThreshold(thresholdId: string) {
@@ -419,8 +515,9 @@ export function ContainerManagement() {
   }), [customerSort, customers])
   const filteredCustomers = useMemo(() => {
     const query = normalize(masterQuery)
-    if (!query) return sortedCustomers
     return sortedCustomers.filter((customer) => {
+      if (!matchesKanaGroup(customer, masterKanaGroup)) return false
+      if (!query) return true
       const customerSites = sites.filter((site) => site.customerId === customer.id)
       return [
         customer.customerCode,
@@ -429,7 +526,7 @@ export function ContainerManagement() {
         ...customerSites.flatMap((site) => [site.siteCode, site.name, site.nameKana]),
       ].some((value) => normalize(value).includes(query))
     })
-  }, [masterQuery, sites, sortedCustomers])
+  }, [masterKanaGroup, masterQuery, sites, sortedCustomers])
   const correctionSiteOptions = correctionDraft
     ? sitesByCode.filter((site) => site.customerId === correctionDraft.customerId).reverse()
     : []
@@ -461,13 +558,14 @@ export function ContainerManagement() {
   }, [ledgerAssetQuery, quantityLedgerOptions, session])
 
   useEffect(() => {
-    if (!session || historyCompany.trim().length < 1) return
+    if (!session || (!historyCompany.trim() && !historyKanaGroup)) return
     if (masterReady && customers.length) {
       const query = normalize(historyCompany)
       const timer = window.setTimeout(() => {
-        setCompanyOptions(customersByCode.filter((customer) =>
-          [customer.customerCode, customer.name, customer.nameKana, customer.previousName].some((value) => normalize(value).includes(query)),
-        ).slice(0, 30))
+        setCompanyOptions(customersByCode.filter((customer) => {
+          if (!matchesKanaGroup(customer, historyKanaGroup)) return false
+          return !query || [customer.customerCode, customer.name, customer.nameKana, customer.previousName].some((value) => normalize(value).includes(query))
+        }).slice(0, 100))
       }, 0)
       return () => window.clearTimeout(timer)
     }
@@ -477,7 +575,7 @@ export function ContainerManagement() {
       if (!result.error) setCompanyOptions(Array.from(new Set((result.data ?? []).map((item) => item.company_name))).slice(0, 30).map((name, index) => ({ id: `legacy-${index}`, customerCode: '', name, nameKana: '', previousName: '' })))
     }, 250)
     return () => window.clearTimeout(timer)
-  }, [customers.length, customersByCode, historyCompany, masterReady, session])
+  }, [customers.length, customersByCode, historyCompany, historyKanaGroup, masterReady, session])
 
   useEffect(() => {
     if (!session || !ledgerAssetId) return
@@ -547,7 +645,7 @@ export function ContainerManagement() {
     document.getElementById('print-page-orientation')?.remove()
     const pageStyle = document.createElement('style')
     pageStyle.id = 'print-page-orientation'
-    pageStyle.textContent = '@media print { @page { size: A4 portrait; margin: 0; } }'
+    pageStyle.textContent = '@media print { @page { size: A4 portrait; margin: 12mm 13mm; } }'
     document.head.appendChild(pageStyle)
 
     setPrintTarget(target)
@@ -1360,7 +1458,7 @@ export function ContainerManagement() {
         {stored.thresholds.map((threshold) => (
           <button key={threshold.id} type="button" aria-pressed={selectedThresholdId === threshold.id} onClick={() => selectLongTermThreshold(threshold.id)} className={`panel rounded-none p-5 text-left transition hover:-translate-y-0.5 hover:border-rose-400 hover:shadow-md focus:outline-none focus:ring-4 focus:ring-rose-200 ${selectedThresholdId === threshold.id ? 'border-rose-600 bg-rose-50 ring-2 ring-rose-600' : ''}`}>
             <div className="flex items-start justify-between">
-              <div><p className="text-sm font-bold text-rose-700">長期設置コンテナ</p><p className="mt-2 text-4xl font-black">{longTerm.filter((item) => item.elapsedDays >= threshold.days).length}件</p></div>
+              <div><p className="text-sm font-bold text-rose-700">長期設置（コンテナ・台数管理）</p><p className="mt-2 text-4xl font-black">{allAging.filter((item) => item.elapsedDays >= threshold.days).length}件</p></div>
               <AlertTriangle className="h-8 w-8 text-rose-700" />
             </div>
             <p className="mt-4 text-sm font-bold text-slate-700">{threshold.label}</p><p className="mt-2 text-xs font-bold text-rose-700">クリックして対象一覧を表示</p>
@@ -1369,8 +1467,8 @@ export function ContainerManagement() {
       </section>
 
       {selectedThreshold ? <section id="long-term-filter-results" className="panel scroll-mt-5 rounded-none border-l-8 border-rose-600 p-5">
-        <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-xl font-black">{selectedThreshold.label}の長期設置コンテナ</h2><p className="mt-2 text-sm text-slate-600">該当 {selectedLongTerm.length}件を、設置期間が長い順に表示しています。</p></div><button type="button" className="inline-flex items-center gap-2 border border-slate-300 bg-white px-4 py-2 text-sm font-bold" onClick={() => setSelectedThresholdId('')}><X className="h-4 w-4" />一覧を閉じる</button></div>
-        <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[760px] text-sm"><thead className="bg-rose-50"><tr>{['経過', '番号', '排出事業者名', '現場名', '設置日'].map((title) => <th key={title} className="border border-slate-200 px-3 py-3 text-left">{title}</th>)}</tr></thead><tbody>{selectedLongTerm.map((item) => <tr key={item.id}><td className="border border-slate-200 px-3 py-3 font-black text-rose-700">{item.elapsedDays}日</td><td className="border border-slate-200 px-3 py-3 font-bold">{item.assetLabel}</td><td className="border border-slate-200 px-3 py-3">{item.companyName}</td><td className="border border-slate-200 px-3 py-3">{item.siteName}</td><td className="border border-slate-200 px-3 py-3">{formatDate(item.installedOn)}</td></tr>)}</tbody></table></div>
+        <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-xl font-black">{selectedThreshold.label}の長期設置一覧</h2><p className="mt-2 text-sm text-slate-600">番号付きコンテナと台数管理を合わせた該当 {selectedLongTerm.length}件を、設置期間が長い順に表示しています。</p></div><button type="button" className="inline-flex items-center gap-2 border border-slate-300 bg-white px-4 py-2 text-sm font-bold" onClick={() => setSelectedThresholdId('')}><X className="h-4 w-4" />一覧を閉じる</button></div>
+        <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[860px] text-sm"><thead className="bg-rose-50"><tr>{['経過', '管理対象', '区分', '台数', '排出事業者名', '現場名', '設置日'].map((title) => <th key={title} className="border border-slate-200 px-3 py-3 text-left">{title}</th>)}</tr></thead><tbody>{selectedLongTerm.map((item) => <tr key={item.id}><td className="border border-slate-200 px-3 py-3 font-black text-rose-700">{item.elapsedDays}日</td><td className="border border-slate-200 px-3 py-3 font-bold">{item.assetLabel}</td><td className="border border-slate-200 px-3 py-3">{item.assetType}</td><td className="border border-slate-200 px-3 py-3">{item.quantity}台</td><td className="border border-slate-200 px-3 py-3">{item.companyName}</td><td className="border border-slate-200 px-3 py-3">{item.siteName}</td><td className="border border-slate-200 px-3 py-3">{formatDate(item.installedOn)}</td></tr>)}</tbody></table></div>
         {!selectedLongTerm.length ? <p className="mt-4 bg-slate-50 px-4 py-5 text-center text-sm font-bold text-slate-600">該当するコンテナはありません。</p> : null}
       </section> : null}
 
@@ -1399,13 +1497,17 @@ export function ContainerManagement() {
               const type = workType(row)
               const availableSites = sitesByCode.filter((site) => site.customerId === row.customerId).reverse()
               const availableItemTypes = itemTypes.filter((item) => item.category === quantityCategory(row))
+              const dailyKanaGroup = dailyKanaGroups[row.id] ?? ''
+              const dailyCustomers = customersByCode.filter((customer) => matchesKanaGroup(customer, dailyKanaGroup))
               return <tr key={row.id} className="bg-white align-top">
                 <td className="border border-slate-300 px-3 py-4 text-center font-black">{index + 1}</td>
                 <td className="border border-slate-300 p-2"><select className="min-w-36 border border-slate-200 bg-white px-3 py-3" value={row.entryType} onChange={(event) => changeEntryType(row.id, event.target.value as ReportRow['entryType'])}><option value="container">コンテナ</option><option value="basket">カゴ（台数）</option><option value="equipment">貸出備品（台数）</option></select>
                   {isQuantityEntry(row) ? <select className="mt-2 block min-w-36 border border-slate-200 bg-white px-3 py-3" value={row.basketType} onChange={(event) => updateRow(row.id, { basketType: event.target.value })}><option value="">種類を選択</option>{availableItemTypes.map((item) => <option key={item.id} value={item.name}>{item.name}</option>)}</select> : null}</td>
                 <td className="border border-slate-300 p-2">
                   <input className="w-full min-w-56 border border-slate-200 px-3 py-3" list={`customer-options-${row.id}`} placeholder="番号・名称・カナで検索" value={row.companyName} onChange={(event) => updateCustomer(row.id, event.target.value)} />
-                  <datalist id={`customer-options-${row.id}`}>{customersByCode.map((customer) => <option key={customer.id} value={customerOption(customer)} />)}</datalist>
+                  <datalist id={`customer-options-${row.id}`}>{dailyCustomers.map((customer) => <option key={customer.id} value={customerOption(customer)} />)}</datalist>
+                  <KanaSelector value={dailyKanaGroup} onChange={(value) => setDailyKanaGroups((current) => ({ ...current, [row.id]: value }))} />
+                  {dailyKanaGroup ? <select aria-label={`${index + 1}行目の排出事業者候補`} className="mt-2 w-full min-w-56 border border-slate-200 bg-white px-3 py-2" value="" onChange={(event) => updateCustomer(row.id, event.target.value)}><option value="">候補一覧から選択</option>{dailyCustomers.map((customer) => <option key={customer.id} value={customerOption(customer)}>{customerOption(customer)}</option>)}</select> : null}
                 </td>
                 <td className="border border-slate-300 p-2">
                   <input className="w-full min-w-56 border border-slate-200 px-3 py-3" list={`site-options-${row.id}`} placeholder={row.customerId ? '番号・名称・カナで検索' : '先に排出事業者を選択'} value={row.siteName} onChange={(event) => updateSite(row.id, row.customerId, event.target.value)} />
@@ -1468,8 +1570,10 @@ export function ContainerManagement() {
             <h3 className="text-lg font-black">現場を登録</h3>
             <div className="mt-4 grid gap-4">
               <label className="text-sm font-bold">排出事業者
-                <input className="mt-2 w-full border border-slate-300 bg-white px-4 py-3" list="site-customer-options" required placeholder="顧客番号・名称・カナで検索" value={siteCustomerQuery} onChange={(event) => selectSiteCustomer(event.target.value)} />
-                <datalist id="site-customer-options">{customersByCode.map((customer) => <option key={customer.id} value={customerOption(customer)} />)}</datalist>
+              <input className="mt-2 w-full border border-slate-300 bg-white px-4 py-3" list="site-customer-options" required placeholder="顧客番号・名称・カナで検索" value={siteCustomerQuery} onChange={(event) => selectSiteCustomer(event.target.value)} />
+                <datalist id="site-customer-options">{customersByCode.filter((customer) => matchesKanaGroup(customer, masterKanaGroup)).map((customer) => <option key={customer.id} value={customerOption(customer)} />)}</datalist>
+                <KanaSelector value={masterKanaGroup} onChange={setMasterKanaGroup} />
+                {masterKanaGroup ? <select aria-label="排出事業者候補" className="mt-2 w-full border border-slate-300 bg-white px-4 py-3" value="" onChange={(event) => selectSiteCustomer(event.target.value)}><option value="">候補一覧から選択</option>{customersByCode.filter((customer) => matchesKanaGroup(customer, masterKanaGroup)).map((customer) => <option key={customer.id} value={customerOption(customer)}>{customerOption(customer)}</option>)}</select> : null}
               </label>
               <label className="text-sm font-bold">現場番号<input className="mt-2 w-full border border-slate-300 px-4 py-3" required placeholder="例：S001" value={siteCode} onChange={(event) => setSiteCode(event.target.value)} /></label>
               <label className="text-sm font-bold">現場名<input className="mt-2 w-full border border-slate-300 px-4 py-3" required placeholder="例：本社工場" value={siteName} onChange={(event) => updateSiteNameWithKana(event.target.value)} onCompositionStart={() => { siteKanaBeforeComposition.current = siteKana }} onCompositionUpdate={(event) => updateComposingKana('site', event.data)} /></label>
@@ -1527,6 +1631,7 @@ export function ContainerManagement() {
             <div className="flex flex-wrap items-end gap-3">
               <label className="text-sm font-bold text-slate-700">一覧を検索
                 <span className="mt-2 flex min-w-72 border border-slate-300 bg-white px-3"><Search className="my-auto h-5 w-5 text-slate-500" /><input className="w-full px-3 py-3 outline-none" placeholder="番号・名称・カナ・現場名" value={masterQuery} onChange={(event) => setMasterQuery(event.target.value)} /></span>
+                <KanaSelector value={masterKanaGroup} onChange={setMasterKanaGroup} />
               </label>
               <label className="text-sm font-bold text-slate-700">並び順
                 <select className="mt-2 block min-w-44 border border-slate-300 bg-white px-4 py-3" value={customerSort} onChange={(event) => setCustomerSort(event.target.value as 'code' | 'kana')}>
@@ -1638,6 +1743,8 @@ export function ContainerManagement() {
             <label className="block text-sm font-bold text-slate-700">排出事業者名
               <input className="mt-2 block w-full border border-slate-300 bg-white px-4 py-3" list="history-company-options" placeholder="顧客番号・名称・カナで検索" value={historyCompany} onChange={(event) => selectHistoryCustomer(event.target.value)} />
               <datalist id="history-company-options">{companyOptions.map((company) => <option key={company.id} value={customerOption(company)} />)}</datalist>
+              <KanaSelector value={historyKanaGroup} onChange={(value) => { setHistoryKanaGroup(value); setHistoryCompany(''); setHistoryCustomerId(''); setHistoryRows([]) }} />
+              {historyKanaGroup ? <select aria-label="排出事業者候補" className="mt-2 w-full border border-slate-300 bg-white px-4 py-3" value="" onChange={(event) => selectHistoryCustomer(event.target.value)}><option value="">候補一覧から選択</option>{companyOptions.map((company) => <option key={company.id} value={customerOption(company)}>{customerOption(company)}</option>)}</select> : null}
             </label>
             <label className="block text-sm font-bold text-slate-700">管理年
               <select className="mt-2 block w-full border border-slate-300 bg-white px-4 py-3" value={historyYear} onChange={(event) => { setHistoryYear(event.target.value); setHistoryRows([]) }}>{years.map((year) => <option key={year} value={year}>{year}年</option>)}</select>
