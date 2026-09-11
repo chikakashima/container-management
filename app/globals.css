@@ -215,13 +215,21 @@ textarea {
     color: #000000;
   }
 
-  body * {
-    visibility: hidden !important;
+  body > :not(#print-root) {
+    display: none !important;
   }
 
-  .print-target,
-  .print-target * {
+  #print-root,
+  #print-root * {
     visibility: visible !important;
+  }
+
+  #print-root {
+    display: block !important;
+    width: 100% !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
   }
 
   .print-target {
