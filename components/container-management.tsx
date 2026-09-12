@@ -42,6 +42,8 @@ type CorrectionDraft = ReportRow & {
 
 type AppTab = 'daily' | 'container-ledger' | 'collection-history' | 'masters' | 'corrections'
 type PrintTarget = 'container-ledger' | 'collection-history' | null
+type InventoryFilter = '' | 'all' | 'container' | 'basket' | 'equipment'
+type LedgerFilter = 'container' | 'basket' | 'equipment'
 
 type LedgerOption = {
   id: string
@@ -289,12 +291,13 @@ export function ContainerManagement() {
   const [rows, setRows] = useState<ReportRow[]>(defaultRows)
   const [errors, setErrors] = useState<string[]>([])
   const [message, setMessage] = useState('')
-  const [companyQuery, setCompanyQuery] = useState('')
-  const [containerQuery, setContainerQuery] = useState('')
+  const [inventoryFilter, setInventoryFilter] = useState<InventoryFilter>('')
   const [selectedThresholdId, setSelectedThresholdId] = useState('')
   const [activeTab, setActiveTab] = useState<AppTab>('daily')
   const [ledgerAssetId, setLedgerAssetId] = useState('')
   const [ledgerAssetQuery, setLedgerAssetQuery] = useState('')
+  const [ledgerFilter, setLedgerFilter] = useState<LedgerFilter>('container')
+  const [ledgerYear, setLedgerYear] = useState('all')
   const [historyCompany, setHistoryCompany] = useState('')
   const [historyCustomerId, setHistoryCustomerId] = useState('')
   const [historyYear, setHistoryYear] = useState(String(new Date().getFullYear()))
@@ -471,24 +474,19 @@ export function ContainerManagement() {
     setSelectedThresholdId(thresholdId)
     window.setTimeout(() => document.getElementById('long-term-filter-results')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0)
   }
-  const searchResults = useMemo(() => {
-    if (containerQuery.trim()) return active.filter((item) => normalize(item.assetLabel).includes(normalize(containerQuery)))
-    if (companyQuery.trim()) return active.filter((item) => {
-      const customer = customers.find((option) => option.id === item.customerId || normalize(option.name) === normalize(item.companyName))
-      return [item.companyName, customer?.customerCode ?? '', customer?.nameKana ?? ''].some((value) => normalize(value).includes(normalize(companyQuery)))
-    })
-    return active
-  }, [active, companyQuery, containerQuery, customers])
-  const basketSearchResults = useMemo(() => {
-    if (containerQuery.trim()) return []
-    if (!companyQuery.trim()) return basketBalances
-    const query = normalize(companyQuery)
-    return basketBalances.filter((item) => {
-      const customer = customers.find((option) => option.id === item.customerId)
-      return [item.companyName, customer?.customerCode ?? '', customer?.nameKana ?? '']
-        .some((value) => normalize(value).includes(query))
-    })
-  }, [basketBalances, companyQuery, containerQuery, customers])
+  const sortedActive = useMemo(() => [...active].sort((a, b) => compareCodes(a.assetLabel, b.assetLabel)), [active])
+  const sortedBalances = useMemo(() => [...basketBalances].sort((a, b) => {
+    const categoryOrder = a.itemCategory === b.itemCategory ? 0 : a.itemCategory === 'カゴ' ? -1 : 1
+    return categoryOrder || compareCodes(a.basketType, b.basketType) || a.companyName.localeCompare(b.companyName, 'ja')
+  }), [basketBalances])
+  const inventoryContainers = inventoryFilter === 'all' || inventoryFilter === 'container' ? sortedActive : []
+  const inventoryBalances = inventoryFilter === 'all'
+    ? sortedBalances
+    : inventoryFilter === 'basket'
+      ? sortedBalances.filter((item) => item.itemCategory === 'カゴ')
+      : inventoryFilter === 'equipment'
+        ? sortedBalances.filter((item) => item.itemCategory === '貸出備品')
+        : []
   const years = useMemo(() => Array.from({ length: 11 }, (_, index) => String(new Date().getFullYear() + 1 - index)), [])
   const customersByCode = useMemo(() => [...customers].sort((a, b) => compareCodes(a.customerCode, b.customerCode)), [customers])
   const sitesByCode = useMemo(() => [...sites].sort((a, b) => compareCodes(a.siteCode, b.siteCode)), [sites])
@@ -538,6 +536,10 @@ export function ContainerManagement() {
     category: item.category,
     itemType: item.name,
   })), [itemTypes])
+  const ledgerOptionsForFilter = useMemo(() => ledgerFilter === 'container'
+    ? assetOptions.filter((item) => item.kind === 'container')
+    : quantityLedgerOptions.filter((item) => item.category === (ledgerFilter === 'basket' ? 'カゴ' : '貸出備品')),
+  [assetOptions, ledgerFilter, quantityLedgerOptions])
 
   useEffect(() => {
     if (!session || !ledgerAssetQuery.trim()) return
@@ -593,7 +595,7 @@ export function ContainerManagement() {
           reports.push(...(result.data ?? []).map(reportFromRow))
           if ((result.data?.length ?? 0) < PAGE_SIZE) break
         }
-        if (!cancelled) setLedgerRows(buildQuantityLedgerRows(reports))
+      if (!cancelled) setLedgerRows(buildQuantityLedgerRows(reports).filter((row) => ledgerYear === 'all' || row.installedOn?.startsWith(ledgerYear) || row.collectedOn?.startsWith(ledgerYear)))
       } else {
         const assignments: LedgerLifecycleRow[] = []
         for (let from = 0; ; from += PAGE_SIZE) {
@@ -609,12 +611,12 @@ export function ContainerManagement() {
           })))
           if ((result.data?.length ?? 0) < PAGE_SIZE) break
         }
-        if (!cancelled) setLedgerRows(assignments)
+        if (!cancelled) setLedgerRows(assignments.filter((row) => ledgerYear === 'all' || row.installedOn?.startsWith(ledgerYear) || row.collectedOn?.startsWith(ledgerYear)))
       }
       if (!cancelled) setSheetLoading(false)
     })()
     return () => { cancelled = true }
-  }, [assetOptions, ledgerAssetId, session])
+  }, [assetOptions, ledgerAssetId, ledgerYear, session])
 
   useEffect(() => {
     if (!session || (!historyCompany.trim() && !historyCustomerId) || !historyYear) return
@@ -624,7 +626,7 @@ export function ContainerManagement() {
       const reports: ContainerReport[] = []
       for (let from = 0; ; from += PAGE_SIZE) {
         let query = supabase.from('container_reports').select('*')
-          .gte('work_date', `${historyYear}-01-01`).lte('work_date', `${historyYear}-12-31`)
+        if (historyYear !== 'all') query = query.gte('work_date', `${historyYear}-01-01`).lte('work_date', `${historyYear}-12-31`)
         query = historyCustomerId ? query.eq('customer_id', historyCustomerId) : query.eq('company_name', historyCompany.trim())
         const result = await query
           .order('work_date', { ascending: true }).order('entry_order', { ascending: true }).range(from, from + PAGE_SIZE - 1)
@@ -1084,8 +1086,7 @@ export function ContainerManagement() {
     }
 
     await loadFromSupabase()
-    setCompanyQuery(reports[0]?.companyName ?? '')
-    setContainerQuery(reports[0]?.installAssetLabel ?? reports[0]?.collectAssetLabel ?? '')
+    setInventoryFilter('all')
     setRows([emptyRow(), emptyRow(), emptyRow()])
     setMessage(pendingMessages.length
       ? `${formatDate(workDate)}の日報を${reports.length}件登録しました。同日の別日報を待っている作業があります（${pendingMessages.join('、')}）。`
@@ -1544,19 +1545,17 @@ export function ContainerManagement() {
         </div>
       </form>
 
-      <section className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
-        <section className="panel rounded-none p-5">
-          <div className="flex items-start justify-between"><div><h2 className="text-xl font-black">今どこに何があるか</h2><p className="mt-2 text-sm text-slate-600">排出事業者名またはコンテナ番号で検索できます。</p></div><PackageCheck className="h-8 w-8 text-emerald-800" /></div>
-          <div className="mt-4 grid gap-3 md:grid-cols-2">
-            <label className="text-sm font-bold">排出事業者名で検索<div className="mt-2 flex border border-slate-200 px-3"><Search className="my-auto h-5 w-5 text-slate-500" /><input className="w-full px-3 py-3 outline-none" value={companyQuery} onChange={(event) => setCompanyQuery(event.target.value)} /></div></label>
-            <label className="text-sm font-bold">コンテナ番号で検索<div className="mt-2 flex border border-slate-200 px-3"><Search className="my-auto h-5 w-5 text-slate-500" /><input className="w-full px-3 py-3 outline-none" value={containerQuery} onChange={(event) => setContainerQuery(event.target.value)} /></div></label>
-          </div>
-          <div className="mt-5 grid gap-4 lg:grid-cols-2">
-            {searchResults.map((item) => { const elapsedDays = daysFrom(item.installedOn); return <article key={item.id} className="border-l-8 border-emerald-700 bg-emerald-50 p-5"><p className="font-bold text-emerald-900">{item.companyName}</p><h3 className="mt-2 text-3xl font-black">{item.assetLabel}</h3><div className="mt-4 space-y-2 text-sm font-bold text-slate-700"><p>設置日：{formatDate(item.installedOn)}</p><p>経過日数：{elapsedDays === null ? '計算対象外' : `${elapsedDays}日`}</p><p>種類：{item.sizeLabel} {item.assetType}</p><p>現場名：{item.siteName}</p></div></article> })}
-            {basketSearchResults.map((item) => <article key={item.id} className="border-l-8 border-sky-700 bg-sky-50 p-5"><p className="font-bold text-sky-900">{item.companyName}</p><h3 className="mt-2 text-3xl font-black">{item.basketType} {item.quantity}台</h3><div className="mt-4 space-y-2 text-sm font-bold text-slate-700"><p>種類：{item.basketType}</p><p>現場名：{item.siteName}</p></div></article>)}
-          </div>
-        </section>
-        <section className="panel rounded-none p-5"><h2 className="text-xl font-black">設置期間が長い順</h2><div className="mt-4 overflow-x-auto"><table className="w-full min-w-[620px] text-sm"><thead className="bg-slate-100"><tr>{['経過', '番号', '排出事業者名', '現場名', '設置日'].map((title) => <th key={title} className="border border-slate-200 px-3 py-3 text-left">{title}</th>)}</tr></thead><tbody>{longTerm.slice(0, 12).map((item) => <tr key={item.id}><td className="border border-slate-200 px-3 py-3 font-black text-rose-700">{item.elapsedDays}日</td><td className="border border-slate-200 px-3 py-3 font-bold">{item.assetLabel}</td><td className="border border-slate-200 px-3 py-3">{item.companyName}</td><td className="border border-slate-200 px-3 py-3">{item.siteName}</td><td className="border border-slate-200 px-3 py-3">{formatDate(item.installedOn)}</td></tr>)}</tbody></table></div></section>
+      <section className="panel rounded-none p-5">
+        <div className="flex items-start justify-between"><div><h2 className="text-xl font-black">今どこに何があるか</h2><p className="mt-2 text-sm text-slate-600">管理区分を選ぶと、現在設置中の対象を表示します。</p></div><PackageCheck className="h-8 w-8 text-emerald-800" /></div>
+        <label className="mt-4 block max-w-sm text-sm font-bold">表示する管理区分
+          <select className="mt-2 w-full border border-slate-300 bg-white px-4 py-3" value={inventoryFilter} onChange={(event) => setInventoryFilter(event.target.value as InventoryFilter)}>
+            <option value="">選択してください</option><option value="all">全て</option><option value="container">コンテナ</option><option value="basket">カゴ（台数）</option><option value="equipment">貸出備品（台数）</option>
+          </select>
+        </label>
+        {inventoryFilter ? <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          {inventoryContainers.map((item) => { const elapsedDays = daysFrom(item.installedOn); return <article key={item.id} className="border-l-8 border-emerald-700 bg-emerald-50 p-5"><p className="font-bold text-emerald-900">{item.companyName}</p><h3 className="mt-2 text-3xl font-black">{item.assetLabel}</h3><div className="mt-4 space-y-2 text-sm font-bold text-slate-700"><p>設置日：{formatDate(item.installedOn)}</p><p>経過日数：{elapsedDays === null ? '計算対象外' : `${elapsedDays}日`}</p><p>種類：{item.sizeLabel} {item.assetType}</p><p>現場名：{item.siteName}</p></div></article> })}
+          {inventoryBalances.map((item) => <article key={item.id} className="border-l-8 border-sky-700 bg-sky-50 p-5"><p className="font-bold text-sky-900">{item.companyName}</p><h3 className="mt-2 text-2xl font-black">{item.basketType} {item.quantity}台</h3><div className="mt-4 space-y-2 text-sm font-bold text-slate-700"><p>区分：{item.itemCategory}（台数）</p><p>現場名：{item.siteName}</p></div></article>)}
+        </div> : null}
       </section>
 
       </> : null}
@@ -1726,10 +1725,13 @@ export function ContainerManagement() {
       {activeTab === 'container-ledger' ? <section className="space-y-5">
         <div className="no-print panel rounded-none p-5">
           <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-            <label className="block text-sm font-bold text-slate-700">管理対象
-              <input className="mt-2 block min-w-80 border border-slate-300 bg-white px-4 py-3" list="container-ledger-options" placeholder="コンテナ番号・カゴ・貸出備品を検索" value={ledgerAssetQuery} onChange={(event) => selectLedgerAsset(event.target.value)} />
-              <datalist id="container-ledger-options">{assetOptions.map((item) => <option key={item.id} value={item.label}>{item.kind === 'quantity' ? item.category : item.sizeLabel || 'コンテナ'}</option>)}</datalist>
-            </label>
+            <div className="grid flex-1 gap-4 md:grid-cols-3">
+              <label className="block text-sm font-bold text-slate-700">管理区分<select className="mt-2 block w-full border border-slate-300 bg-white px-4 py-3" value={ledgerFilter} onChange={(event) => { setLedgerFilter(event.target.value as LedgerFilter); setLedgerAssetId(''); setLedgerAssetQuery(''); setLedgerRows([]) }}><option value="container">コンテナ</option><option value="basket">カゴ（台数）</option><option value="equipment">貸出備品（台数）</option></select></label>
+              <label className="block text-sm font-bold text-slate-700">管理対象
+                {ledgerFilter === 'container' ? <><input className="mt-2 block w-full border border-slate-300 bg-white px-4 py-3" list="container-ledger-options" placeholder="コンテナ番号を入力" value={ledgerAssetQuery} onChange={(event) => selectLedgerAsset(event.target.value)} /><datalist id="container-ledger-options">{ledgerOptionsForFilter.map((item) => <option key={item.id} value={item.label}>{item.sizeLabel || 'コンテナ'}</option>)}</datalist></> : <select className="mt-2 block w-full border border-slate-300 bg-white px-4 py-3" value={ledgerAssetId} onChange={(event) => { const option = quantityLedgerOptions.find((item) => item.id === event.target.value); setLedgerAssetId(event.target.value); setLedgerAssetQuery(option?.label ?? ''); setAssetOptions((current) => option ? [...current.filter((item) => item.id !== option.id), option] : current) }}><option value="">登録済みリストから選択</option>{ledgerOptionsForFilter.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select>}
+              </label>
+              <label className="block text-sm font-bold text-slate-700">管理年<select className="mt-2 block w-full border border-slate-300 bg-white px-4 py-3" value={ledgerYear} onChange={(event) => setLedgerYear(event.target.value)}><option value="all">全ての期間</option>{years.map((year) => <option key={year} value={year}>{year}年</option>)}</select></label>
+            </div>
             <button type="button" className="inline-flex items-center justify-center gap-2 bg-emerald-800 px-5 py-3 font-black text-white" onClick={() => printSheet('container-ledger')}><Printer className="h-5 w-5" />A4 PDF・印刷</button>
           </div>
         </div>
@@ -1756,15 +1758,15 @@ export function ContainerManagement() {
               {historyKanaGroup ? <select aria-label="排出事業者候補" className="mt-2 w-full border border-slate-300 bg-white px-4 py-3" value="" onChange={(event) => selectHistoryCustomer(event.target.value)}><option value="">候補一覧から選択</option>{companyOptions.map((company) => <option key={company.id} value={customerOption(company)}>{customerOption(company)}</option>)}</select> : null}
             </label>
             <label className="block text-sm font-bold text-slate-700">管理年
-              <select className="mt-2 block w-full border border-slate-300 bg-white px-4 py-3" value={historyYear} onChange={(event) => { setHistoryYear(event.target.value); setHistoryRows([]) }}>{years.map((year) => <option key={year} value={year}>{year}年</option>)}</select>
+              <select className="mt-2 block w-full border border-slate-300 bg-white px-4 py-3" value={historyYear} onChange={(event) => { setHistoryYear(event.target.value); setHistoryRows([]) }}><option value="all">全ての期間</option>{years.map((year) => <option key={year} value={year}>{year}年</option>)}</select>
             </label>
             <button type="button" className="inline-flex items-center justify-center gap-2 bg-emerald-800 px-5 py-3 font-black text-white" onClick={() => printSheet('collection-history')}><Printer className="h-5 w-5" />A4 PDF・印刷</button>
           </div>
-          <p className="mt-3 text-sm text-slate-600">排出事業者名と年を選ぶと、1年分の収集履歴を紙と同じ形式で保存できます。</p>
+          <p className="mt-3 text-sm text-slate-600">排出事業者名と期間を選ぶと、収集履歴を紙と同じ形式で保存できます。</p>
         </div>
         {sheetLoading ? <p className="no-print text-sm font-bold text-emerald-800">帳票データを読み込み中です…</p> : null}
         <div data-print-sheet="collection-history" className="paper-sheet paper-portrait">
-          <div className="collection-heading"><div><span>排出事業者名</span><strong>{historyHeadingCompany}</strong></div><h2>収集履歴</h2><p>{historyYear}年</p></div>
+          <div className="collection-heading"><div><span>排出事業者名</span><strong>{historyHeadingCompany}</strong></div><h2>収集履歴</h2><p>{historyYear === 'all' ? '全期間' : `${historyYear}年`}</p></div>
           <table className="paper-table collection-table">
             <colgroup><col style={{ width: '15%' }} /><col style={{ width: '16%' }} /><col style={{ width: '14%' }} /><col style={{ width: '13%' }} /><col style={{ width: '13%' }} /><col style={{ width: '29%' }} /></colgroup>
             <thead><tr><th rowSpan={2}>収集年月日</th><th rowSpan={2}>現場名（工事件名）及び住所</th><th rowSpan={2}>運搬者</th><th colSpan={2}>コンテナ番号</th><th rowSpan={2}>品目・数量及び処分先・備考</th></tr><tr><th>設置</th><th>回収</th></tr></thead>
