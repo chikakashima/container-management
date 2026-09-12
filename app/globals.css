@@ -192,29 +192,52 @@ textarea {
 }
 
 @media print {
-  @page portraitPage { size: A4 portrait; margin: 0; }
-  @page landscapePage { size: A4 landscape; margin: 0; }
+  @page portraitPage { size: A4 portrait; margin: 12mm 13mm; }
+  @page landscapePage { size: A4 landscape; margin: 10mm 11mm; }
+
+  html,
+  body,
+  body > div,
+  main,
+  main > div,
+  main > div > section {
+    width: auto !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    min-height: 0 !important;
+    height: auto !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
 
   body {
     background: #ffffff;
     color: #000000;
   }
 
-  body * {
-    visibility: hidden !important;
+  body > :not(#print-root) {
+    display: none !important;
   }
 
-  .print-target,
-  .print-target * {
+  #print-root,
+  #print-root * {
     visibility: visible !important;
   }
 
-  .print-target {
-    position: absolute;
-    inset: 0;
+  #print-root {
     display: block !important;
-    width: 210mm !important;
-    min-height: 297mm !important;
+    width: 100% !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  .print-target {
+    position: static;
+    display: block !important;
+    width: 100% !important;
+    min-height: 0 !important;
+    overflow: visible !important;
     margin: 0 !important;
     border: 0 !important;
     box-shadow: none !important;
@@ -222,22 +245,27 @@ textarea {
 
   .print-target.paper-portrait {
     page: portraitPage;
-    padding: 12mm 13mm !important;
+    padding: 0 !important;
   }
 
   .print-target.paper-landscape {
     page: landscapePage;
-    width: 297mm !important;
-    min-height: 210mm !important;
-    padding: 10mm 11mm !important;
-  }
-
-  body:has(.print-target.paper-landscape) {
-    width: 297mm;
+    width: 100% !important;
+    min-height: 0 !important;
+    padding: 0 !important;
   }
 
   header,
   .no-print {
     display: none !important;
+  }
+
+  .print-target thead {
+    display: table-header-group;
+  }
+
+  .print-target tr {
+    break-inside: avoid;
+    page-break-inside: avoid;
   }
 }
