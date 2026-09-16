@@ -760,7 +760,7 @@ export function ContainerManagement() {
     setCorrectionMessage('')
     setCorrectionDraft(null)
 
-    let query = supabase.from('container_reports').select('*').not('id', 'like', 'initial-report-%')
+    let query = supabase.from('container_reports').select('*')
     if (correctionDate) query = query.eq('work_date', correctionDate)
     const search = correctionQuery.trim().replace(/[,()%]/g, ' ')
     if (search) {
@@ -838,23 +838,34 @@ export function ContainerManagement() {
     if (!window.confirm('訂正内容を保存すると、現在の設置状況・管理表・収集履歴も再計算されます。保存してよろしいですか？')) return
 
     setCorrectionLoading(true)
-    const result = await supabase.rpc('correct_container_report_v2', {
-      p_report_id: correctionDraft.reportId,
-      p_work_date: correctionDraft.workDate,
-      p_customer_id: correctionDraft.customerId,
-      p_site_id: correctionDraft.siteId,
-      p_driver_name: correctionDraft.driverName.trim(),
-      p_install_asset_id: install?.id ?? null,
-      p_install_asset_label: install?.label ?? null,
-      p_collect_asset_id: collect?.id ?? null,
-      p_collect_asset_label: collect?.label ?? null,
-      p_quantity: correctionDraft.quantityNote.trim(),
-      p_note: correctionDraft.quantityNote.trim() || null,
-      p_quantity_install_count: isQuantityEntry(correctionDraft) ? basketInstall : 0,
-      p_quantity_collect_count: isQuantityEntry(correctionDraft) ? basketCollect : 0,
-      p_asset_type: isQuantityEntry(correctionDraft) ? quantityCategory(correctionDraft) : 'コンテナ',
-      p_size_label: isQuantityEntry(correctionDraft) ? correctionDraft.basketType.trim() : '',
-    })
+    const isInitialReport = correctionDraft.reportId.startsWith('initial-report-')
+    const result = isInitialReport
+      ? await supabase.rpc('correct_initial_container_report', {
+          p_report_id: correctionDraft.reportId,
+          p_work_date: correctionDraft.workDate,
+          p_customer_id: correctionDraft.customerId,
+          p_site_id: correctionDraft.siteId,
+          p_driver_name: correctionDraft.driverName.trim(),
+          p_quantity: correctionDraft.quantityNote.trim(),
+          p_note: correctionDraft.quantityNote.trim() || null,
+        })
+      : await supabase.rpc('correct_container_report_v2', {
+          p_report_id: correctionDraft.reportId,
+          p_work_date: correctionDraft.workDate,
+          p_customer_id: correctionDraft.customerId,
+          p_site_id: correctionDraft.siteId,
+          p_driver_name: correctionDraft.driverName.trim(),
+          p_install_asset_id: install?.id ?? null,
+          p_install_asset_label: install?.label ?? null,
+          p_collect_asset_id: collect?.id ?? null,
+          p_collect_asset_label: collect?.label ?? null,
+          p_quantity: correctionDraft.quantityNote.trim(),
+          p_note: correctionDraft.quantityNote.trim() || null,
+          p_quantity_install_count: isQuantityEntry(correctionDraft) ? basketInstall : 0,
+          p_quantity_collect_count: isQuantityEntry(correctionDraft) ? basketCollect : 0,
+          p_asset_type: isQuantityEntry(correctionDraft) ? quantityCategory(correctionDraft) : 'コンテナ',
+          p_size_label: isQuantityEntry(correctionDraft) ? correctionDraft.basketType.trim() : '',
+        })
     if (result.error) {
       setCorrectionErrors([`訂正を保存できませんでした：${result.error.message}`])
       setCorrectionLoading(false)
@@ -1693,7 +1704,7 @@ export function ContainerManagement() {
             </label>
             <button type="submit" disabled={correctionLoading} className="bg-emerald-800 px-6 py-3 font-black text-white disabled:opacity-50">{correctionLoading ? '検索中…' : '履歴を検索'}</button>
           </form>
-          <p className="mt-3 text-xs leading-6 text-slate-500">初期登録データは保護対象のため、この画面には表示されません。条件なしの場合は最新100件を表示します。</p>
+          <p className="mt-3 text-xs leading-6 text-slate-500">初期登録データも検索・訂正できます。初期登録のコンテナ番号・種類・台数は保護され、日付・排出事業者・現場・ドライバー・備考を修正できます。条件なしの場合は最新100件を表示します。</p>
         </section>
 
         {correctionErrors.length ? <div className="border-l-8 border-rose-700 bg-rose-50 p-4 text-sm font-bold leading-7 text-rose-900">{correctionErrors.map((error) => <p key={error}>{error}</p>)}</div> : null}
@@ -1718,12 +1729,12 @@ export function ContainerManagement() {
           </div>
           <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             {isQuantityEntry(correctionDraft) ? <>
-              <label className="text-sm font-bold">種類<select required className="mt-2 w-full border border-slate-300 bg-white px-4 py-3" value={correctionDraft.basketType} onChange={(event) => updateCorrection({ basketType: event.target.value })}><option value="">種類を選択</option>{itemTypes.filter((item) => item.category === quantityCategory(correctionDraft)).map((item) => <option key={item.id} value={item.name}>{item.name}</option>)}</select></label>
-              <label className="text-sm font-bold">設置台数<input type="number" min="0" step="1" inputMode="numeric" className="mt-2 w-full border border-slate-300 px-4 py-3" value={correctionDraft.basketInstallCount} onChange={(event) => updateCorrection({ basketInstallCount: event.target.value })} /></label>
-              <label className="text-sm font-bold">引上げ台数<input type="number" min="0" step="1" inputMode="numeric" className="mt-2 w-full border border-slate-300 px-4 py-3" value={correctionDraft.basketCollectCount} onChange={(event) => updateCorrection({ basketCollectCount: event.target.value })} /></label>
+              <label className="text-sm font-bold">種類<select required disabled={correctionDraft.reportId.startsWith('initial-report-')} className="mt-2 w-full border border-slate-300 bg-white px-4 py-3 disabled:bg-slate-100" value={correctionDraft.basketType} onChange={(event) => updateCorrection({ basketType: event.target.value })}><option value="">種類を選択</option>{itemTypes.filter((item) => item.category === quantityCategory(correctionDraft)).map((item) => <option key={item.id} value={item.name}>{item.name}</option>)}</select></label>
+              <label className="text-sm font-bold">設置台数<input type="number" min="0" step="1" inputMode="numeric" disabled={correctionDraft.reportId.startsWith('initial-report-')} className="mt-2 w-full border border-slate-300 px-4 py-3 disabled:bg-slate-100" value={correctionDraft.basketInstallCount} onChange={(event) => updateCorrection({ basketInstallCount: event.target.value })} /></label>
+              <label className="text-sm font-bold">引上げ台数<input type="number" min="0" step="1" inputMode="numeric" disabled={correctionDraft.reportId.startsWith('initial-report-')} className="mt-2 w-full border border-slate-300 px-4 py-3 disabled:bg-slate-100" value={correctionDraft.basketCollectCount} onChange={(event) => updateCorrection({ basketCollectCount: event.target.value })} /></label>
             </> : <>
-              <label className="text-sm font-bold">設置<input autoCapitalize="characters" className="mt-2 w-full border border-slate-300 px-4 py-3" placeholder="例：203" value={assetIdentifier(correctionDraft.installAssetId)} onChange={(event) => updateCorrection({ installAssetId: normalizeAssetIdentifier(event.target.value) })} /></label>
-              <label className="text-sm font-bold">引上げ<input autoCapitalize="characters" className="mt-2 w-full border border-slate-300 px-4 py-3" placeholder="例：208" value={assetIdentifier(correctionDraft.collectAssetId)} onChange={(event) => updateCorrection({ collectAssetId: normalizeAssetIdentifier(event.target.value) })} /></label>
+              <label className="text-sm font-bold">設置<input autoCapitalize="characters" disabled={correctionDraft.reportId.startsWith('initial-report-')} className="mt-2 w-full border border-slate-300 px-4 py-3 disabled:bg-slate-100" placeholder="例：203" value={assetIdentifier(correctionDraft.installAssetId)} onChange={(event) => updateCorrection({ installAssetId: normalizeAssetIdentifier(event.target.value) })} /></label>
+              <label className="text-sm font-bold">引上げ<input autoCapitalize="characters" disabled={correctionDraft.reportId.startsWith('initial-report-')} className="mt-2 w-full border border-slate-300 px-4 py-3 disabled:bg-slate-100" placeholder="例：208" value={assetIdentifier(correctionDraft.collectAssetId)} onChange={(event) => updateCorrection({ collectAssetId: normalizeAssetIdentifier(event.target.value) })} /></label>
             </>}
             <label className={`text-sm font-bold ${correctionDraft.entryType === 'container' ? 'md:col-span-2' : ''}`}>受託数量・備考<textarea className="mt-2 min-h-12 w-full border border-slate-300 px-4 py-3" value={correctionDraft.quantityNote} onChange={(event) => updateCorrection({ quantityNote: event.target.value })} /></label>
           </div>
@@ -1734,11 +1745,12 @@ export function ContainerManagement() {
         </form> : null}
 
         <section className="panel rounded-none p-5">
-          <div className="flex flex-wrap items-end justify-between gap-3"><div><h3 className="text-lg font-black">運用開始後の入力履歴</h3><p className="mt-2 text-sm text-slate-600">表示 {correctionRows.length}件</p></div></div>
+          <div className="flex flex-wrap items-end justify-between gap-3"><div><h3 className="text-lg font-black">入力履歴（初期登録を含む）</h3><p className="mt-2 text-sm text-slate-600">表示 {correctionRows.length}件</p></div></div>
           <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[1050px] text-sm"><thead className="bg-slate-100"><tr>{['日付', '排出事業者', '現場', 'ドライバー', '設置', '引上げ', '受託数量・備考', ''].map((title) => <th key={title} className="border border-slate-200 px-3 py-3 text-left">{title}</th>)}</tr></thead><tbody>{correctionRows.map((report) => {
             const installLabel = isQuantityAssetType(report.assetType) ? `${report.sizeLabel}×${report.basketInstallCount ?? 0}` : report.installAssetLabel ?? ''
             const collectLabel = isQuantityAssetType(report.assetType) ? `${report.sizeLabel}×${report.basketCollectCount ?? 0}` : report.collectAssetLabel ?? ''
-            return <tr key={report.id}><td className="border border-slate-200 px-3 py-3 font-bold">{formatDate(report.workDate)}</td><td className="border border-slate-200 px-3 py-3">{report.companyName}</td><td className="border border-slate-200 px-3 py-3">{report.siteName}</td><td className="border border-slate-200 px-3 py-3">{report.driverName}</td><td className="border border-slate-200 px-3 py-3">{installLabel}</td><td className="border border-slate-200 px-3 py-3">{collectLabel}</td><td className="whitespace-pre-wrap border border-slate-200 px-3 py-3">{report.note ?? report.quantity}</td><td className="border border-slate-200 px-3 py-3"><div className="flex gap-2"><button type="button" className="inline-flex items-center gap-2 border border-emerald-700 px-3 py-2 font-black text-emerald-800" onClick={() => startCorrection(report)}><PencilLine className="h-4 w-4" />訂正</button><button type="button" className="inline-flex items-center gap-2 border border-rose-700 px-3 py-2 font-black text-rose-700" onClick={() => void deleteReport(report)}><Trash2 className="h-4 w-4" />削除</button></div></td></tr>
+            const isInitial = report.id.startsWith('initial-report-')
+            return <tr key={report.id}><td className="border border-slate-200 px-3 py-3 font-bold">{formatDate(report.workDate)}{isInitial ? <span className="ml-2 inline-flex bg-sky-100 px-2 py-1 text-[10px] font-black text-sky-800">初期登録</span> : null}</td><td className="border border-slate-200 px-3 py-3">{report.companyName}</td><td className="border border-slate-200 px-3 py-3">{report.siteName}</td><td className="border border-slate-200 px-3 py-3">{report.driverName}</td><td className="border border-slate-200 px-3 py-3">{installLabel}</td><td className="border border-slate-200 px-3 py-3">{collectLabel}</td><td className="whitespace-pre-wrap border border-slate-200 px-3 py-3">{report.note ?? report.quantity}</td><td className="border border-slate-200 px-3 py-3"><div className="flex gap-2"><button type="button" className="inline-flex items-center gap-2 border border-emerald-700 px-3 py-2 font-black text-emerald-800" onClick={() => startCorrection(report)}><PencilLine className="h-4 w-4" />訂正</button>{!isInitial ? <button type="button" className="inline-flex items-center gap-2 border border-rose-700 px-3 py-2 font-black text-rose-700" onClick={() => void deleteReport(report)}><Trash2 className="h-4 w-4" />削除</button> : null}</div></td></tr>
           })}</tbody></table></div>
           {!correctionLoading && !correctionRows.length ? <p className="mt-4 bg-slate-50 px-4 py-5 text-center text-sm font-bold text-slate-600">該当する入力履歴はありません。</p> : null}
         </section>
