@@ -1335,6 +1335,28 @@ export function ContainerManagement() {
     setMasterMessage('現場を修正しました。今後の入力から新しい現場名を使用します。')
   }
 
+  async function deleteSite(site: SiteMaster) {
+    setErrors([])
+    setMasterMessage('')
+    const customer = customers.find((item) => item.id === site.customerId)
+    const confirmed = window.confirm(
+      `${customer?.name ?? '排出事業者'}／${site.siteCode} ${site.name} を削除します。\n\n入力履歴・現在の設置情報・台数情報がある現場は削除できません。削除すると元に戻せませんが、よろしいですか？`,
+    )
+    if (!confirmed) return
+
+    setLoading(true)
+    const result = await supabase.rpc('delete_container_site_master', { p_site_id: site.id })
+    if (result.error) {
+      setErrors([`現場を削除できませんでした：${result.error.message}`])
+      setLoading(false)
+      return
+    }
+
+    if (siteEdit?.id === site.id) setSiteEdit(null)
+    await loadFromSupabase()
+    setMasterMessage(`現場「${site.siteCode} ${site.name}」を削除しました。`)
+  }
+
   async function deleteReport(report: ContainerReport) {
     setCorrectionErrors([])
     setCorrectionMessage('')
@@ -1653,7 +1675,7 @@ export function ContainerManagement() {
             const customerSites = sitesByCode.filter((site) => site.customerId === customer.id)
             const expanded = expandedCustomerIds.has(customer.id)
             const visibleSites = expanded ? customerSites : customerSites.slice(0, 3)
-            return <tr key={customer.id} className="align-top"><td className="border border-slate-200 px-3 py-3 font-bold"><p>{customer.customerCode}</p><button type="button" className="mt-3 inline-flex items-center gap-1 bg-amber-600 px-3 py-2 text-xs font-black text-white shadow-sm hover:bg-amber-700" onClick={() => startCustomerEdit(customer)}><PencilLine className="h-3 w-3" />排出事業者を修正</button></td><td className="border border-slate-200 px-3 py-3 break-words"><p>{customer.name}</p>{customer.previousName ? <p className="mt-1 text-xs text-slate-500">旧社名：{customer.previousName}</p> : null}</td><td className="border border-slate-200 px-3 py-3 break-words">{customer.nameKana}</td><td className="border border-slate-200 px-3 py-3">{visibleSites.length ? <div className="space-y-2">{visibleSites.map((site) => <div key={site.id} className="flex items-start justify-between gap-3 border-b border-slate-100 pb-2 last:border-0"><p><strong>{site.siteCode}</strong> {site.name}{site.nameKana ? <span className="ml-2 text-xs text-slate-500">（{site.nameKana}）</span> : null}</p><button type="button" className="shrink-0 bg-amber-600 px-3 py-2 text-xs font-black text-white shadow-sm hover:bg-amber-700" onClick={() => startSiteEdit(site)}><PencilLine className="mr-1 inline h-3 w-3" />現場を修正</button></div>)}</div> : '未登録'}{customerSites.length > 3 ? <button type="button" className="mt-3 inline-flex items-center gap-1 text-xs font-black text-emerald-800 underline" onClick={() => setExpandedCustomerIds((current) => { const next = new Set(current); if (next.has(customer.id)) next.delete(customer.id); else next.add(customer.id); return next })}>{expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}{expanded ? '3件表示に戻す' : `残り${customerSites.length - 3}件を表示`}</button> : null}</td></tr>
+            return <tr key={customer.id} className="align-top"><td className="border border-slate-200 px-3 py-3 font-bold"><p>{customer.customerCode}</p><button type="button" className="mt-3 inline-flex items-center gap-1 bg-amber-600 px-3 py-2 text-xs font-black text-white shadow-sm hover:bg-amber-700" onClick={() => startCustomerEdit(customer)}><PencilLine className="h-3 w-3" />排出事業者を修正</button></td><td className="border border-slate-200 px-3 py-3 break-words"><p>{customer.name}</p>{customer.previousName ? <p className="mt-1 text-xs text-slate-500">旧社名：{customer.previousName}</p> : null}</td><td className="border border-slate-200 px-3 py-3 break-words">{customer.nameKana}</td><td className="border border-slate-200 px-3 py-3">{visibleSites.length ? <div className="space-y-2">{visibleSites.map((site) => <div key={site.id} className="flex items-start justify-between gap-3 border-b border-slate-100 pb-2 last:border-0"><p><strong>{site.siteCode}</strong> {site.name}{site.nameKana ? <span className="ml-2 text-xs text-slate-500">（{site.nameKana}）</span> : null}</p><span className="flex shrink-0 gap-2"><button type="button" className="bg-amber-600 px-3 py-2 text-xs font-black text-white shadow-sm hover:bg-amber-700" onClick={() => startSiteEdit(site)}><PencilLine className="mr-1 inline h-3 w-3" />現場を修正</button><button type="button" className="inline-flex items-center gap-1 border border-rose-700 bg-white px-3 py-2 text-xs font-black text-rose-700 shadow-sm hover:bg-rose-50" onClick={() => void deleteSite(site)}><Trash2 className="h-3 w-3" />削除</button></span></div>)}</div> : '未登録'}{customerSites.length > 3 ? <button type="button" className="mt-3 inline-flex items-center gap-1 text-xs font-black text-emerald-800 underline" onClick={() => setExpandedCustomerIds((current) => { const next = new Set(current); if (next.has(customer.id)) next.delete(customer.id); else next.add(customer.id); return next })}>{expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}{expanded ? '3件表示に戻す' : `残り${customerSites.length - 3}件を表示`}</button> : null}</td></tr>
           })}</tbody></table></div>
           {!filteredCustomers.length ? <p className="mt-4 bg-slate-50 px-4 py-5 text-center text-sm font-bold text-slate-600">該当する排出事業者・現場はありません。</p> : null}
         </section>
