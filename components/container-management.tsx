@@ -27,6 +27,7 @@ type ReportRow = {
   companyName: string
   siteId: string
   siteName: string
+  adHocSite: boolean
   installAssetId: string
   collectAssetId: string
   basketInstallCount: string
@@ -168,7 +169,7 @@ function KanaSelector({ value, onChange, label = 'フリガナの頭文字' }: K
 
 function emptyRow(id = `row-${Date.now()}-${Math.random()}`): ReportRow {
   return {
-    id, entryType: 'container', basketType: 'カゴ', customerId: '', companyName: '', siteId: '', siteName: '',
+    id, entryType: 'container', basketType: 'カゴ', customerId: '', companyName: '', siteId: '', siteName: '', adHocSite: false,
     installAssetId: '', collectAssetId: '', basketInstallCount: '', basketCollectCount: '', quantityNote: '',
   }
 }
@@ -722,13 +723,28 @@ export function ContainerManagement() {
   function updateCustomer(rowId: string, value: string) {
     const exact = customers.find((customer) => value === customerOption(customer))
     updateRow(rowId, exact
-      ? { customerId: exact.id, companyName: customerDisplayName(exact), siteId: '', siteName: '' }
-      : { customerId: '', companyName: value, siteId: '', siteName: '' })
+      ? { customerId: exact.id, companyName: customerDisplayName(exact), siteId: '', siteName: '', adHocSite: false }
+      : { customerId: '', companyName: value, siteId: '', siteName: '', adHocSite: false })
   }
 
   function updateSite(rowId: string, customerId: string, value: string) {
     const exact = sites.find((site) => site.customerId === customerId && value === siteOption(site))
     updateRow(rowId, exact ? { siteId: exact.id, siteName: exact.name } : { siteId: '', siteName: value })
+  }
+
+  function toggleAdHocSite(row: ReportRow, enabled: boolean) {
+    updateRow(row.id, enabled
+      ? {
+          adHocSite: true,
+          siteId: '',
+          siteName: '',
+          entryType: 'container',
+          installAssetId: '',
+          collectAssetId: '',
+          basketInstallCount: '',
+          basketCollectCount: '',
+        }
+      : { adHocSite: false, siteId: '', siteName: '' })
   }
 
   function selectSiteCustomer(value: string) {
@@ -800,6 +816,7 @@ export function ContainerManagement() {
       companyName: report.companyName,
       siteId: report.siteId ?? '',
       siteName: report.siteName,
+      adHocSite: !report.siteId,
       installAssetId: assetIdentifier(report.installAssetId ?? ''),
       collectAssetId: assetIdentifier(report.collectAssetId ?? ''),
       basketInstallCount: String(report.basketInstallCount ?? 0),
@@ -899,8 +916,12 @@ export function ContainerManagement() {
 
       if (!row.companyName.trim()) next.push(`${line}行目：排出事業者名を入力してください。`)
       if (masterReady && customers.length && !row.customerId) next.push(`${line}行目：登録済みの排出事業者を候補から選択してください。`)
-      if (row.siteName.trim() && row.siteName.trim() !== '同左' && masterReady && row.customerId && !row.siteId) {
+      if (!row.adHocSite && row.siteName.trim() && row.siteName.trim() !== '同左' && masterReady && row.customerId && !row.siteId) {
         next.push(`${line}行目：登録済みの現場を候補から選択してください。`)
+      }
+      if (row.adHocSite && !row.siteName.trim()) next.push(`${line}行目：随時入力する現場名を入力してください。`)
+      if (row.adHocSite && (install || collect || isQuantityEntry(row) || basketInstall > 0 || basketCollect > 0)) {
+        next.push(`${line}行目：現場名を随時入力する場合、コンテナ・カゴ・貸出備品の設置／引上げは登録できません。`)
       }
       if (workType(row) !== '設置' && !row.quantityNote.trim()) next.push(`${line}行目：受託数量・備考を入力してください。`)
 
@@ -935,7 +956,10 @@ export function ContainerManagement() {
       const current = active.find((item) => item.assetId === targetAsset.id)
       if (current) {
         if (collect) {
-          if (normalize(current.companyName) !== normalize(collect.row.companyName)) {
+          const sameCustomer = current.customerId && collect.row.customerId
+            ? current.customerId === collect.row.customerId
+            : normalize(current.companyName) === normalize(collect.row.companyName)
+          if (!sameCustomer) {
             next.push(`${collect.line}行目：${current.assetLabel}は別の排出事業者（${current.companyName}）に設置中です。`)
             return
           }
@@ -949,7 +973,9 @@ export function ContainerManagement() {
         // The database reconciliation keeps this as pending instead of rejecting it.
         return
       } else if (install && collect) {
-        const sameCustomer = normalize(install.row.companyName) === normalize(collect.row.companyName)
+        const sameCustomer = install.row.customerId && collect.row.customerId
+          ? install.row.customerId === collect.row.customerId
+          : normalize(install.row.companyName) === normalize(collect.row.companyName)
         const sameSite = (install.row.siteId && collect.row.siteId)
           ? install.row.siteId === collect.row.siteId
           : normalize(install.row.siteName || '同左') === normalize(collect.row.siteName || '同左')
@@ -1544,7 +1570,7 @@ export function ContainerManagement() {
               const dailyCustomers = customersByCode.filter((customer) => matchesKanaGroup(customer, dailyKanaGroup))
               return <tr key={row.id} className="bg-white align-top">
                 <td className="border border-slate-300 px-3 py-4 text-center font-black">{index + 1}</td>
-                <td className="border border-slate-300 p-2"><select className="min-w-36 border border-slate-200 bg-white px-3 py-3" value={row.entryType} onChange={(event) => changeEntryType(row.id, event.target.value as ReportRow['entryType'])}><option value="container">コンテナ</option><option value="basket">カゴ（台数）</option><option value="equipment">貸出備品（台数）</option></select>
+                <td className="border border-slate-300 p-2"><select disabled={row.adHocSite} className="min-w-36 border border-slate-200 bg-white px-3 py-3 disabled:bg-slate-100 disabled:text-slate-500" value={row.entryType} onChange={(event) => changeEntryType(row.id, event.target.value as ReportRow['entryType'])}><option value="container">コンテナ</option><option value="basket">カゴ（台数）</option><option value="equipment">貸出備品（台数）</option></select>
                   {isQuantityEntry(row) ? <select className="mt-2 block min-w-36 border border-slate-200 bg-white px-3 py-3" value={row.basketType} onChange={(event) => updateRow(row.id, { basketType: event.target.value })}><option value="">種類を選択</option>{availableItemTypes.map((item) => <option key={item.id} value={item.name}>{item.name}</option>)}</select> : null}</td>
                 <td className="border border-slate-300 p-2">
                   <input className="w-full min-w-56 border border-slate-200 px-3 py-3" list={`customer-options-${row.id}`} placeholder="番号・名称・カナで検索" value={row.companyName} onChange={(event) => updateCustomer(row.id, event.target.value)} />
@@ -1553,15 +1579,18 @@ export function ContainerManagement() {
                   {dailyKanaGroup ? <select aria-label={`${index + 1}行目の排出事業者候補`} className="mt-2 w-full min-w-56 border border-slate-200 bg-white px-3 py-2" value="" onChange={(event) => updateCustomer(row.id, event.target.value)}><option value="">候補一覧から選択</option>{dailyCustomers.map((customer) => <option key={customer.id} value={customerOption(customer)}>{customerOption(customer)}</option>)}</select> : null}
                 </td>
                 <td className="border border-slate-300 p-2">
-                  <input className="w-full min-w-56 border border-slate-200 px-3 py-3" list={`site-options-${row.id}`} placeholder={row.customerId ? '番号・名称・カナで検索' : '先に排出事業者を選択'} value={row.siteName} onChange={(event) => updateSite(row.id, row.customerId, event.target.value)} />
-                  <datalist id={`site-options-${row.id}`}>{availableSites.map((site) => <option key={site.id} value={siteOption(site)} />)}</datalist>
+                  <label className="mb-2 flex items-center gap-2 text-xs font-bold text-emerald-800"><input type="checkbox" checked={row.adHocSite} onChange={(event) => toggleAdHocSite(row, event.target.checked)} />現場名を随時入力</label>
+                  {row.adHocSite
+                    ? <input className="w-full min-w-56 border border-emerald-500 bg-emerald-50 px-3 py-3" placeholder="現場名を直接入力" value={row.siteName} onChange={(event) => updateRow(row.id, { siteName: event.target.value })} />
+                    : <><input className="w-full min-w-56 border border-slate-200 px-3 py-3" list={`site-options-${row.id}`} placeholder={row.customerId ? '番号・名称・カナで検索' : '先に排出事業者を選択'} value={row.siteName} onChange={(event) => updateSite(row.id, row.customerId, event.target.value)} /><datalist id={`site-options-${row.id}`}>{availableSites.map((site) => <option key={site.id} value={siteOption(site)} />)}</datalist></>}
+                  {row.adHocSite ? <p className="mt-1 text-xs text-slate-500">設置・引上げを伴わない作業専用です</p> : null}
                 </td>
                 <td className="border border-slate-300 p-2">{isQuantityEntry(row)
                   ? <input type="number" min="0" step="1" inputMode="numeric" className="w-full min-w-24 border border-slate-200 px-3 py-3" placeholder="台数" value={row.basketInstallCount} onChange={(event) => updateRow(row.id, { basketInstallCount: event.target.value })} />
-                  : <input autoCapitalize="characters" className="w-full min-w-28 border border-slate-200 px-3 py-3" placeholder="408 / CS002" value={assetIdentifier(row.installAssetId)} onChange={(event) => updateRow(row.id, { installAssetId: normalizeAssetIdentifier(event.target.value) })} />}</td>
+                  : <input disabled={row.adHocSite} autoCapitalize="characters" className="w-full min-w-28 border border-slate-200 px-3 py-3 disabled:bg-slate-100" placeholder={row.adHocSite ? '入力不可' : '408 / CS002'} value={assetIdentifier(row.installAssetId)} onChange={(event) => updateRow(row.id, { installAssetId: normalizeAssetIdentifier(event.target.value) })} />}</td>
                 <td className="border border-slate-300 p-2">{isQuantityEntry(row)
                   ? <input type="number" min="0" step="1" inputMode="numeric" className="w-full min-w-24 border border-slate-200 px-3 py-3" placeholder="台数" value={row.basketCollectCount} onChange={(event) => updateRow(row.id, { basketCollectCount: event.target.value })} />
-                  : <input autoCapitalize="characters" className="w-full min-w-28 border border-slate-200 px-3 py-3" placeholder="210 / M003" value={assetIdentifier(row.collectAssetId)} onChange={(event) => updateRow(row.id, { collectAssetId: normalizeAssetIdentifier(event.target.value) })} />}</td>
+                  : <input disabled={row.adHocSite} autoCapitalize="characters" className="w-full min-w-28 border border-slate-200 px-3 py-3 disabled:bg-slate-100" placeholder={row.adHocSite ? '入力不可' : '210 / M003'} value={assetIdentifier(row.collectAssetId)} onChange={(event) => updateRow(row.id, { collectAssetId: normalizeAssetIdentifier(event.target.value) })} />}</td>
                 <td className="border border-slate-300 p-2"><textarea className="min-h-12 w-full min-w-52 whitespace-pre-wrap border border-slate-200 px-3 py-3" placeholder="例：金属くず 310kg（自動車部品）" value={row.quantityNote} onChange={(event) => updateRow(row.id, { quantityNote: event.target.value })} /><p className="mt-1 text-xs text-slate-500">文字数制限なし・改行も帳票へ反映</p></td>
                 <td className="border border-slate-300 px-2 py-4 text-center"><span className={`inline-flex px-3 py-1 text-xs font-black ${typeColor(type)}`}>{type}</span></td>
                 <td className="border border-slate-300 p-2"><button type="button" className="p-3 text-slate-400 hover:text-rose-700" onClick={() => setRows((current) => current.length === 1 ? [emptyRow()] : current.filter((item) => item.id !== row.id))} aria-label="行を削除"><Trash2 className="h-5 w-5" /></button></td>
