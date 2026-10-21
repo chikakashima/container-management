@@ -1369,7 +1369,7 @@ export function ContainerManagement() {
     }
     setSiteEdit(null)
     await loadFromSupabase()
-    setMasterMessage('現場を修正しました。今後の入力から新しい現場名を使用します。')
+    setMasterMessage('現場を修正しました。収集履歴・入力履歴・現在の設置情報にも新しい現場名を反映しました。')
   }
 
   async function deleteSite(site: SiteMaster) {
