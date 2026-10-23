@@ -293,6 +293,9 @@ export function ContainerManagement() {
   const [errors, setErrors] = useState<string[]>([])
   const [message, setMessage] = useState('')
   const [inventoryFilter, setInventoryFilter] = useState<InventoryFilter>('')
+  const [inventoryCustomerQuery, setInventoryCustomerQuery] = useState('')
+  const [inventoryCustomerId, setInventoryCustomerId] = useState('')
+  const [inventoryKanaGroup, setInventoryKanaGroup] = useState('')
   const [selectedThresholdId, setSelectedThresholdId] = useState('')
   const [activeTab, setActiveTab] = useState<AppTab>('daily')
   const [ledgerAssetId, setLedgerAssetId] = useState('')
@@ -480,13 +483,27 @@ export function ContainerManagement() {
     const categoryOrder = a.itemCategory === b.itemCategory ? 0 : a.itemCategory === 'カゴ' ? -1 : 1
     return categoryOrder || compareCodes(a.basketType, b.basketType) || a.companyName.localeCompare(b.companyName, 'ja')
   }), [basketBalances])
-  const inventoryContainers = inventoryFilter === 'all' || inventoryFilter === 'container' ? sortedActive : []
+  const inventoryCustomerCandidates = useMemo(
+    () => [...customers]
+      .sort((a, b) => compareCodes(a.customerCode, b.customerCode))
+      .filter((customer) => matchesKanaGroup(customer, inventoryKanaGroup)),
+    [customers, inventoryKanaGroup],
+  )
+  const matchesInventoryCustomer = (item: { customerId?: string; companyName: string }) => {
+    if (!inventoryCustomerId) return true
+    if (item.customerId) return item.customerId === inventoryCustomerId
+    const selectedCustomer = customers.find((customer) => customer.id === inventoryCustomerId)
+    return selectedCustomer ? normalize(item.companyName) === normalize(customerDisplayName(selectedCustomer)) || normalize(item.companyName) === normalize(selectedCustomer.name) : false
+  }
+  const customerFilteredActive = sortedActive.filter(matchesInventoryCustomer)
+  const customerFilteredBalances = sortedBalances.filter(matchesInventoryCustomer)
+  const inventoryContainers = inventoryFilter === 'all' || inventoryFilter === 'container' ? customerFilteredActive : []
   const inventoryBalances = inventoryFilter === 'all'
-    ? sortedBalances
+    ? customerFilteredBalances
     : inventoryFilter === 'basket'
-      ? sortedBalances.filter((item) => item.itemCategory === 'カゴ')
+      ? customerFilteredBalances.filter((item) => item.itemCategory === 'カゴ')
       : inventoryFilter === 'equipment'
-        ? sortedBalances.filter((item) => item.itemCategory === '貸出備品')
+        ? customerFilteredBalances.filter((item) => item.itemCategory === '貸出備品')
         : []
   const years = useMemo(() => Array.from({ length: 11 }, (_, index) => String(new Date().getFullYear() + 1 - index)), [])
   const customersByCode = useMemo(() => [...customers].sort((a, b) => compareCodes(a.customerCode, b.customerCode)), [customers])
@@ -1608,12 +1625,27 @@ export function ContainerManagement() {
       </form>
 
       <section className="panel rounded-none p-5">
-        <div className="flex items-start justify-between"><div><h2 className="text-xl font-black">今どこに何があるか</h2><p className="mt-2 text-sm text-slate-600">管理区分を選ぶと、現在設置中の対象を表示します。</p></div><PackageCheck className="h-8 w-8 text-emerald-800" /></div>
-        <label className="mt-4 block max-w-sm text-sm font-bold">表示する管理区分
-          <select className="mt-2 w-full border border-slate-300 bg-white px-4 py-3" value={inventoryFilter} onChange={(event) => setInventoryFilter(event.target.value as InventoryFilter)}>
-            <option value="">選択してください</option><option value="all">全て</option><option value="container">コンテナ</option><option value="basket">カゴ（台数）</option><option value="equipment">貸出備品（台数）</option>
-          </select>
-        </label>
+        <div className="flex items-start justify-between"><div><h2 className="text-xl font-black">今どこに何があるか</h2><p className="mt-2 text-sm text-slate-600">種類と排出事業者を選ぶと、現在設置中の対象を絞り込んで表示します。</p></div><PackageCheck className="h-8 w-8 text-emerald-800" /></div>
+        <div className="mt-4 grid gap-5 lg:grid-cols-[minmax(16rem,22rem)_1fr]">
+          <label className="block text-sm font-bold">種類
+            <select className="mt-2 w-full border border-slate-300 bg-white px-4 py-3" value={inventoryFilter} onChange={(event) => setInventoryFilter(event.target.value as InventoryFilter)}>
+              <option value="">選択してください</option><option value="all">全て</option><option value="container">コンテナ</option><option value="basket">カゴ（台数）</option><option value="equipment">貸出備品（台数）</option>
+            </select>
+          </label>
+          <div>
+            <label className="block text-sm font-bold">排出事業者
+              <input className="mt-2 w-full border border-slate-300 bg-white px-4 py-3" list="inventory-customer-options" placeholder="顧客番号・名称・カナで検索（未選択は全社）" value={inventoryCustomerQuery} onChange={(event) => {
+                const value = event.target.value
+                const exact = customers.find((customer) => customerOption(customer) === value)
+                setInventoryCustomerQuery(value)
+                setInventoryCustomerId(exact?.id ?? '')
+              }} />
+            </label>
+            <datalist id="inventory-customer-options">{inventoryCustomerCandidates.map((customer) => <option key={customer.id} value={customerOption(customer)} />)}</datalist>
+            <KanaSelector value={inventoryKanaGroup} onChange={(value) => { setInventoryKanaGroup(value); setInventoryCustomerQuery(''); setInventoryCustomerId('') }} />
+            {inventoryCustomerId ? <button type="button" className="mt-2 text-xs font-bold text-emerald-800 underline" onClick={() => { setInventoryCustomerQuery(''); setInventoryCustomerId('') }}>排出事業者の選択を解除</button> : null}
+          </div>
+        </div>
         {inventoryFilter ? <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {inventoryContainers.map((item) => { const elapsedDays = daysFrom(item.installedOn); return <article key={item.id} className="border-l-8 border-emerald-700 bg-emerald-50 p-5"><p className="font-bold text-emerald-900">{item.companyName}</p><h3 className="mt-2 text-3xl font-black">{item.assetLabel}</h3><div className="mt-4 space-y-2 text-sm font-bold text-slate-700"><p>設置日：{formatDate(item.installedOn)}</p><p>経過日数：{elapsedDays === null ? '計算対象外' : `${elapsedDays}日`}</p><p>種類：{item.sizeLabel} {item.assetType}</p><p>現場名：{item.siteName}</p></div></article> })}
           {inventoryBalances.map((item) => <article key={item.id} className="border-l-8 border-sky-700 bg-sky-50 p-5"><p className="font-bold text-sky-900">{item.companyName}</p><h3 className="mt-2 text-2xl font-black">{item.basketType} {item.quantity}台</h3><div className="mt-4 space-y-2 text-sm font-bold text-slate-700"><p>区分：{item.itemCategory}（台数）</p><p>現場名：{item.siteName}</p></div></article>)}
