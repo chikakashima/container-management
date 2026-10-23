@@ -486,8 +486,13 @@ export function ContainerManagement() {
   const inventoryCustomerCandidates = useMemo(
     () => [...customers]
       .sort((a, b) => compareCodes(a.customerCode, b.customerCode))
-      .filter((customer) => matchesKanaGroup(customer, inventoryKanaGroup)),
-    [customers, inventoryKanaGroup],
+      .filter((customer) => matchesKanaGroup(customer, inventoryKanaGroup))
+      .filter((customer) => {
+        const query = normalize(inventoryCustomerQuery)
+        return !query || normalize(customerOption(customer)).includes(query)
+      })
+      .slice(0, 100),
+    [customers, inventoryKanaGroup, inventoryCustomerQuery],
   )
   const matchesInventoryCustomer = (item: { customerId?: string; companyName: string }) => {
     if (!inventoryCustomerId) return true
@@ -1634,15 +1639,24 @@ export function ContainerManagement() {
           </label>
           <div>
             <label className="block text-sm font-bold">排出事業者
-              <input className="mt-2 w-full border border-slate-300 bg-white px-4 py-3" list="inventory-customer-options" placeholder="顧客番号・名称・カナで検索（未選択は全社）" value={inventoryCustomerQuery} onChange={(event) => {
+              <input className="mt-2 w-full border border-slate-300 bg-white px-4 py-3" placeholder="顧客番号・名称・カナで検索（未選択は全社）" value={inventoryCustomerQuery} onChange={(event) => {
                 const value = event.target.value
                 const exact = customers.find((customer) => customerOption(customer) === value)
                 setInventoryCustomerQuery(value)
                 setInventoryCustomerId(exact?.id ?? '')
               }} />
             </label>
-            <datalist id="inventory-customer-options">{inventoryCustomerCandidates.map((customer) => <option key={customer.id} value={customerOption(customer)} />)}</datalist>
             <KanaSelector value={inventoryKanaGroup} onChange={(value) => { setInventoryKanaGroup(value); setInventoryCustomerQuery(''); setInventoryCustomerId('') }} />
+            {(inventoryCustomerQuery.trim() || inventoryKanaGroup) && inventoryCustomerCandidates.length ? <label className="mt-3 block text-xs font-bold text-slate-600">候補一覧
+              <select className="mt-1 w-full border border-slate-300 bg-white px-3 py-2 text-sm" value={inventoryCustomerId} onChange={(event) => {
+                const customer = customers.find((item) => item.id === event.target.value)
+                setInventoryCustomerId(customer?.id ?? '')
+                setInventoryCustomerQuery(customer ? customerOption(customer) : '')
+              }}>
+                <option value="">候補から選択してください</option>
+                {inventoryCustomerCandidates.map((customer) => <option key={customer.id} value={customer.id}>{customerOption(customer)}</option>)}
+              </select>
+            </label> : null}
             {inventoryCustomerId ? <button type="button" className="mt-2 text-xs font-bold text-emerald-800 underline" onClick={() => { setInventoryCustomerQuery(''); setInventoryCustomerId('') }}>排出事業者の選択を解除</button> : null}
           </div>
         </div>
