@@ -585,23 +585,48 @@ export function ContainerManagement() {
 
   useEffect(() => {
     if (!session || (!historyCompany.trim() && !historyKanaGroup)) return
-    if (masterReady && customers.length) {
-      const query = normalize(historyCompany)
-      const timer = window.setTimeout(() => {
-        setCompanyOptions(customersByCode.filter((customer) => {
-          if (!matchesKanaGroup(customer, historyKanaGroup)) return false
-          return !query || [customer.customerCode, customer.name, customer.nameKana, customer.previousName].some((value) => normalize(value).includes(query))
-        }))
-      }, 0)
-      return () => window.clearTimeout(timer)
-    }
+    let cancelled = false
     const timer = window.setTimeout(async () => {
+      const directCustomers: CustomerMaster[] = []
+      let loadError = false
+      for (let from = 0; ; from += PAGE_SIZE) {
+        const result = await supabase.from('container_customers')
+          .select('id,customer_code,name,name_kana,previous_name')
+          .order('customer_code', { ascending: true })
+          .range(from, from + PAGE_SIZE - 1)
+        if (result.error) {
+          loadError = true
+          break
+        }
+        directCustomers.push(...(result.data ?? []).map((item) => ({
+          id: String(item.id),
+          customerCode: String(item.customer_code),
+          name: String(item.name),
+          nameKana: String(item.name_kana),
+          previousName: String(item.previous_name ?? ''),
+        })))
+        if ((result.data?.length ?? 0) < PAGE_SIZE) break
+      }
+      if (cancelled) return
+      if (!loadError) {
+        const query = normalize(historyCompany)
+        setCompanyOptions(directCustomers.filter((customer) => {
+          if (!matchesKanaGroup(customer, historyKanaGroup)) return false
+          return !query || [customer.customerCode, customer.name, customer.nameKana, customer.previousName]
+            .some((value) => normalize(value).includes(query))
+        }))
+        return
+      }
+
       const result = await supabase.from('container_reports').select('company_name')
         .ilike('company_name', `%${historyCompany.trim()}%`).limit(200)
-      if (!result.error) setCompanyOptions(Array.from(new Set((result.data ?? []).map((item) => item.company_name))).slice(0, 30).map((name, index) => ({ id: `legacy-${index}`, customerCode: '', name, nameKana: '', previousName: '' })))
+      if (!cancelled && !result.error) setCompanyOptions(Array.from(new Set((result.data ?? []).map((item) => item.company_name))).slice(0, 30).map((name, index) => ({ id: `legacy-${index}`, customerCode: '', name, nameKana: '', previousName: '' })))
     }, 250)
-    return () => window.clearTimeout(timer)
-  }, [customers.length, customersByCode, historyCompany, historyKanaGroup, masterReady, session])
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [historyCompany, historyKanaGroup, session])
 
   useEffect(() => {
     if (!session || !ledgerAssetId) return
@@ -1867,6 +1892,7 @@ export function ContainerManagement() {
               <datalist id="history-company-options">{companyOptions.map((company) => <option key={company.id} value={customerOption(company)} />)}</datalist>
               <KanaSelector value={historyKanaGroup} onChange={(value) => { setHistoryKanaGroup(value); setHistoryCompany(''); setHistoryCustomerId(''); setHistoryRows([]) }} />
               {historyKanaGroup ? <select aria-label="排出事業者候補" className="mt-2 w-full border border-slate-300 bg-white px-4 py-3" value="" onChange={(event) => selectHistoryCustomer(event.target.value)}><option value="">候補一覧から選択</option>{companyOptions.map((company) => <option key={company.id} value={customerOption(company)}>{customerOption(company)}</option>)}</select> : null}
+              {historyKanaGroup ? <p className="mt-1 text-xs font-bold text-slate-500">該当する排出事業者：{companyOptions.length}件</p> : null}
             </label>
             <label className="block text-sm font-bold text-slate-700">管理年
               <select className="mt-2 block w-full border border-slate-300 bg-white px-4 py-3" value={historyYear} onChange={(event) => { setHistoryYear(event.target.value); setHistoryRows([]) }}><option value="all">全ての期間</option>{years.map((year) => <option key={year} value={year}>{year}年</option>)}</select>
