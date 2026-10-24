@@ -589,7 +589,7 @@ export function ContainerManagement() {
         setCompanyOptions(customersByCode.filter((customer) => {
           if (!matchesKanaGroup(customer, historyKanaGroup)) return false
           return !query || [customer.customerCode, customer.name, customer.nameKana, customer.previousName].some((value) => normalize(value).includes(query))
-        }).slice(0, 100))
+        }))
       }, 0)
       return () => window.clearTimeout(timer)
     }
