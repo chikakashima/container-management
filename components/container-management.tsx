@@ -232,7 +232,9 @@ function typeColor(type: ContainerWorkType) {
   return 'bg-amber-100 text-amber-800'
 }
 
-const PAGE_SIZE = 500
+// The Supabase project caps a response at 100 rows. Request the same number so
+// the pagination loops continue until every page has been loaded.
+const PAGE_SIZE = 100
 
 function reportFromRow(item: Record<string, unknown>): ContainerReport {
   return {
