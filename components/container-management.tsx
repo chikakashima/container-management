@@ -587,28 +587,19 @@ export function ContainerManagement() {
     if (!session || (!historyCompany.trim() && !historyKanaGroup)) return
     let cancelled = false
     const timer = window.setTimeout(async () => {
-      const directCustomers: CustomerMaster[] = []
-      let loadError = false
-      for (let from = 0; ; from += PAGE_SIZE) {
-        const result = await supabase.from('container_customers')
-          .select('id,customer_code,name,name_kana,previous_name')
-          .order('customer_code', { ascending: true })
-          .range(from, from + PAGE_SIZE - 1)
-        if (result.error) {
-          loadError = true
-          break
-        }
-        directCustomers.push(...(result.data ?? []).map((item) => ({
+      const customerResult = await supabase.rpc('list_container_customers_json')
+      const customerRows = Array.isArray(customerResult.data)
+        ? customerResult.data as Array<Record<string, unknown>>
+        : []
+      if (cancelled) return
+      if (!customerResult.error) {
+        const directCustomers: CustomerMaster[] = customerRows.map((item) => ({
           id: String(item.id),
           customerCode: String(item.customer_code),
           name: String(item.name),
           nameKana: String(item.name_kana),
           previousName: String(item.previous_name ?? ''),
-        })))
-        if ((result.data?.length ?? 0) < PAGE_SIZE) break
-      }
-      if (cancelled) return
-      if (!loadError) {
+        }))
         const query = normalize(historyCompany)
         setCompanyOptions(directCustomers.filter((customer) => {
           if (!matchesKanaGroup(customer, historyKanaGroup)) return false
