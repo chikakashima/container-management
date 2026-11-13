@@ -59,6 +59,15 @@ type CustomerEditDraft = Pick<CustomerMaster, 'id' | 'customerCode' | 'name' | '
 type SiteEditDraft = Pick<SiteMaster, 'id' | 'siteCode' | 'name' | 'nameKana'>
 type ItemTypeEditDraft = Pick<QuantityItemMaster, 'id' | 'category' | 'name'>
 
+type NumberedContainerMaster = {
+  id: string
+  label: string
+  sizeLabel: '' | '4㎥' | '8㎥'
+  isActive: boolean
+}
+
+type NumberedContainerEditDraft = Pick<NumberedContainerMaster, 'id' | 'label' | 'sizeLabel'>
+
 type AgingRow = {
   id: string
   assetLabel: string
@@ -318,6 +327,7 @@ export function ContainerManagement() {
   const [quantityReports, setQuantityReports] = useState<ContainerReport[]>([])
   const [drivers, setDrivers] = useState<DriverMaster[]>([])
   const [itemTypes, setItemTypes] = useState<QuantityItemMaster[]>([])
+  const [numberedContainers, setNumberedContainers] = useState<NumberedContainerMaster[]>([])
   const [masterReady, setMasterReady] = useState(true)
   const [customerCode, setCustomerCode] = useState('')
   const [customerName, setCustomerName] = useState('')
@@ -331,6 +341,11 @@ export function ContainerManagement() {
   const [itemCategory, setItemCategory] = useState<QuantityAssetType>('カゴ')
   const [itemTypeName, setItemTypeName] = useState('')
   const [itemTypeEdit, setItemTypeEdit] = useState<ItemTypeEditDraft | null>(null)
+  const [containerNumber, setContainerNumber] = useState('')
+  const [containerSize, setContainerSize] = useState<'4㎥' | '8㎥'>('4㎥')
+  const [containerMasterQuery, setContainerMasterQuery] = useState('')
+  const [showInactiveContainers, setShowInactiveContainers] = useState(false)
+  const [numberedContainerEdit, setNumberedContainerEdit] = useState<NumberedContainerEditDraft | null>(null)
   const [masterQuery, setMasterQuery] = useState('')
   const [masterMessage, setMasterMessage] = useState('')
   const [customerSort, setCustomerSort] = useState<'code' | 'kana'>('code')
@@ -416,13 +431,28 @@ export function ContainerManagement() {
       }
       return { data, error: null }
     })()
-    const [customersResult, sitesResult, basketResult, driversResult, itemTypesResult, quantityReportResult] = await Promise.all([
+    const numberedContainerPromise = (async () => {
+      const data: Array<Record<string, unknown>> = []
+      for (let from = 0; ; from += PAGE_SIZE) {
+        const result = await supabase.from('container_assets')
+          .select('id,label,size_label,is_active')
+          .eq('asset_type', 'コンテナ')
+          .order('label', { ascending: true })
+          .range(from, from + PAGE_SIZE - 1)
+        if (result.error) return { data, error: result.error }
+        data.push(...((result.data ?? []) as unknown as Array<Record<string, unknown>>))
+        if ((result.data?.length ?? 0) < PAGE_SIZE) break
+      }
+      return { data, error: null }
+    })()
+    const [customersResult, sitesResult, basketResult, driversResult, itemTypesResult, quantityReportResult, numberedContainerResult] = await Promise.all([
       loadPages('container_customers', 'id,customer_code,name,name_kana,previous_name'),
       loadPages('container_sites', 'id,customer_id,site_code,name,name_kana'),
       loadPages('basket_balances', 'id,customer_id,site_id,company_name,site_name,item_category,basket_type,quantity'),
       loadPages('container_drivers', 'id,name'),
       loadPages('container_item_types', 'id,category,name'),
       quantityReportPromise,
+      numberedContainerPromise,
     ])
     const mastersAvailable = !customersResult.error && !sitesResult.error && !basketResult.error && !driversResult.error && !itemTypesResult.error
     setMasterReady(mastersAvailable)
@@ -433,12 +463,37 @@ export function ContainerManagement() {
       setDrivers(driversResult.data.map((item) => ({ id: String(item.id), name: String(item.name) })).filter((item) => item.name !== '初期登録').sort((a, b) => a.name.localeCompare(b.name, 'ja')))
       setItemTypes(itemTypesResult.data.map((item) => ({ id: String(item.id), category: item.category as QuantityAssetType, name: String(item.name) })).sort((a, b) => a.name.localeCompare(b.name, 'ja', { numeric: true })))
     }
+    if (!numberedContainerResult.error) {
+      setNumberedContainers(numberedContainerResult.data.map((item) => ({
+        id: String(item.id),
+        label: String(item.label),
+        sizeLabel: (['4㎥', '8㎥'].includes(String(item.size_label)) ? String(item.size_label) : '') as NumberedContainerMaster['sizeLabel'],
+        isActive: item.is_active !== false,
+      })).sort((a, b) => compareCodes(a.label, b.label)))
+    }
     if (!quantityReportResult.error) setQuantityReports(quantityReportResult.data)
     setStored({ assignments, reports: [], thresholds: longTermThresholds })
     setLoading(false)
   }
 
   const active = useMemo(() => stored.assignments.filter((item) => !item.collectedOn), [stored.assignments])
+  const activeNumberedContainers = useMemo(
+    () => numberedContainers.filter((item) => item.isActive),
+    [numberedContainers],
+  )
+  const filteredNumberedContainers = useMemo(() => {
+    const query = normalize(containerMasterQuery)
+    return numberedContainers
+      .filter((item) => (showInactiveContainers || item.isActive) && (!query || normalize(`${item.label}${item.sizeLabel}`).includes(query)))
+      .sort((a, b) => compareCodes(a.label, b.label))
+  }, [containerMasterQuery, numberedContainers, showInactiveContainers])
+
+  function numberedContainer(value: string) {
+    const parsed = asset(value)
+    if (!parsed) return undefined
+    const master = numberedContainers.find((item) => item.id === parsed.id || normalize(item.label) === normalize(parsed.label))
+    return master ? { ...parsed, id: master.id, label: master.label, sizeLabel: master.sizeLabel, isActive: master.isActive } : undefined
+  }
   const longTerm = useMemo<AgingRow[]>(
     () => active.flatMap((item): AgingRow[] => {
       const elapsedDays = daysFrom(item.installedOn)
@@ -949,8 +1004,8 @@ export function ContainerManagement() {
 
     inputRows.forEach((row, index) => {
       const line = index + 1
-      const install = row.entryType === 'container' ? asset(row.installAssetId) : undefined
-      const collect = row.entryType === 'container' ? asset(row.collectAssetId) : undefined
+      const install = row.entryType === 'container' ? numberedContainer(row.installAssetId) : undefined
+      const collect = row.entryType === 'container' ? numberedContainer(row.collectAssetId) : undefined
       const basketInstall = Number(row.basketInstallCount || 0)
       const basketCollect = Number(row.basketCollectCount || 0)
 
@@ -977,6 +1032,11 @@ export function ContainerManagement() {
       }
 
       if (!install && !collect && !row.quantityNote.trim()) next.push(`${line}行目：設置・引上げ・受託数量のいずれかを入力してください。`)
+
+      if (row.entryType === 'container' && row.installAssetId && !install) next.push(`${line}行目：設置するコンテナ番号は未登録です。先に「排出事業者・現場登録」画面で追加してください。`)
+      if (row.entryType === 'container' && row.collectAssetId && !collect) next.push(`${line}行目：引上げるコンテナ番号は未登録です。先に「排出事業者・現場登録」画面で追加してください。`)
+      if (install && !install.isActive) next.push(`${line}行目：コンテナ番号「${install.label}」は使用停止中です。`)
+      if (collect && !collect.isActive) next.push(`${line}行目：コンテナ番号「${collect.label}」は使用停止中です。`)
 
       if (install) {
         const movement = movements.get(install.id) ?? { asset: install }
@@ -1068,8 +1128,8 @@ export function ContainerManagement() {
 
     const batch = Date.now()
     const reports: ContainerReport[] = inputRows.map((row, index) => {
-      const install = !isQuantityEntry(row) ? asset(row.installAssetId) : undefined
-      const collect = !isQuantityEntry(row) ? asset(row.collectAssetId) : undefined
+      const install = !isQuantityEntry(row) ? numberedContainer(row.installAssetId) : undefined
+      const collect = !isQuantityEntry(row) ? numberedContainer(row.collectAssetId) : undefined
       return {
         id: `report-${batch}-${index}`,
         workDate,
@@ -1094,23 +1154,13 @@ export function ContainerManagement() {
     })
 
     setLoading(true)
-    const usedAssets = new Map<string, NonNullable<ReturnType<typeof asset>>>()
+    const usedAssets = new Map<string, NonNullable<ReturnType<typeof numberedContainer>>>()
     inputRows.filter((row) => !isQuantityEntry(row)).forEach((row) => {
-      const install = asset(row.installAssetId)
-      const collect = asset(row.collectAssetId)
+      const install = numberedContainer(row.installAssetId)
+      const collect = numberedContainer(row.collectAssetId)
       if (install) usedAssets.set(install.id, install)
       if (collect) usedAssets.set(collect.id, collect)
     })
-    const assetsResult = await supabase.from('container_assets').upsert(
-      Array.from(usedAssets.values()).map((item) => ({ id: item.id, label: item.label, asset_type: item.assetType, size_label: item.sizeLabel })),
-      { onConflict: 'id' },
-    )
-    if (assetsResult.error) {
-      setErrors([`コンテナ情報を保存できませんでした：${assetsResult.error.message}`])
-      setLoading(false)
-      return
-    }
-
     const reportsResult = await supabase.from('container_reports').insert(reports.map((item) => ({
       id: item.id, work_date: item.workDate, customer_id: item.customerId ?? null,
       company_name: item.companyName, site_id: item.siteId ?? null, site_name: item.siteName,
@@ -1175,6 +1225,88 @@ export function ContainerManagement() {
     setDriverName('')
     setErrors([])
     setMessage('入力内容をクリアしました。')
+  }
+
+  async function addNumberedContainer(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const label = normalizeAssetIdentifier(containerNumber)
+    setErrors([])
+    setMasterMessage('')
+    if (!label) {
+      setErrors(['追加するコンテナ番号を入力してください。'])
+      return
+    }
+    if (numberedContainers.some((item) => normalize(item.label) === normalize(label))) {
+      setErrors([`コンテナ番号「${label}」はすでに登録されています。`])
+      return
+    }
+    setLoading(true)
+    const result = await supabase.from('container_assets').insert({
+      id: `container-${label.toLowerCase()}`,
+      label,
+      asset_type: 'コンテナ',
+      size_label: containerSize,
+      is_active: true,
+    })
+    if (result.error) {
+      setErrors([result.error.code === '23505' ? '同じコンテナ番号がすでに登録されています。' : `コンテナ番号を追加できませんでした：${result.error.message}`])
+      setLoading(false)
+      return
+    }
+    setContainerNumber('')
+    await loadFromSupabase()
+    setMasterMessage(`コンテナ番号「${label}」（${containerSize}）を追加しました。`)
+  }
+
+  function startNumberedContainerEdit(item: NumberedContainerMaster) {
+    setNumberedContainerEdit({ id: item.id, label: item.label, sizeLabel: item.sizeLabel })
+    window.setTimeout(() => document.getElementById('numbered-container-edit-form')?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 0)
+  }
+
+  async function saveNumberedContainerEdit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!numberedContainerEdit) return
+    const label = normalizeAssetIdentifier(numberedContainerEdit.label)
+    if (!label || !numberedContainerEdit.sizeLabel) {
+      setErrors(['コンテナ番号と種類（4㎥・8㎥）を入力してください。'])
+      return
+    }
+    setErrors([])
+    setMasterMessage('')
+    setLoading(true)
+    const result = await supabase.rpc('rename_numbered_container', {
+      p_asset_id: numberedContainerEdit.id,
+      p_new_label: label,
+      p_size_label: numberedContainerEdit.sizeLabel,
+    })
+    if (result.error) {
+      setErrors([`コンテナ番号を修正できませんでした：${result.error.message}`])
+      setLoading(false)
+      return
+    }
+    setNumberedContainerEdit(null)
+    await loadFromSupabase()
+    setMasterMessage(`コンテナ番号を「${label}」（${numberedContainerEdit.sizeLabel}）へ修正し、既存の履歴にも反映しました。`)
+  }
+
+  async function toggleNumberedContainerActive(item: NumberedContainerMaster) {
+    const nextActive = !item.isActive
+    const action = nextActive ? '再使用' : '使用停止'
+    setErrors([])
+    setMasterMessage('')
+    if (!window.confirm(nextActive
+      ? `コンテナ番号「${item.label}」を再び日報で使用できる状態にしますか？`
+      : `コンテナ番号「${item.label}」を使用停止にします。過去の履歴は残り、日報の候補から除外されます。よろしいですか？`)) return
+    setLoading(true)
+    const result = await supabase.rpc('set_numbered_container_active', { p_asset_id: item.id, p_active: nextActive })
+    if (result.error) {
+      setErrors([`コンテナ番号を${action}にできませんでした：${result.error.message}`])
+      setLoading(false)
+      return
+    }
+    if (!nextActive && numberedContainerEdit?.id === item.id) setNumberedContainerEdit(null)
+    await loadFromSupabase()
+    setMasterMessage(`コンテナ番号「${item.label}」を${action}にしました。`)
   }
 
   async function addCustomer(event: React.FormEvent<HTMLFormElement>) {
@@ -1582,6 +1714,7 @@ export function ContainerManagement() {
       </section> : null}
 
       <form className="panel rounded-none p-5" onSubmit={submit}>
+        <datalist id="active-container-number-options">{activeNumberedContainers.map((item) => <option key={item.id} value={item.label}>{item.sizeLabel || '種類未設定'}</option>)}</datalist>
         <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <div className="flex items-center gap-3"><Truck className="h-8 w-8 text-emerald-800" /><h2 className="text-xl font-black">作業日報入力</h2></div>
@@ -1627,10 +1760,10 @@ export function ContainerManagement() {
                 </td>
                 <td className="border border-slate-300 p-2">{isQuantityEntry(row)
                   ? <input type="number" min="0" step="1" inputMode="numeric" className="w-full min-w-24 border border-slate-200 px-3 py-3" placeholder="台数" value={row.basketInstallCount} onChange={(event) => updateRow(row.id, { basketInstallCount: event.target.value })} />
-                  : <input disabled={row.adHocSite} autoCapitalize="characters" className="w-full min-w-28 border border-slate-200 px-3 py-3 disabled:bg-slate-100" placeholder={row.adHocSite ? '入力不可' : '408 / CS002'} value={assetIdentifier(row.installAssetId)} onChange={(event) => updateRow(row.id, { installAssetId: normalizeAssetIdentifier(event.target.value) })} />}</td>
+                  : <input list="active-container-number-options" disabled={row.adHocSite} autoCapitalize="characters" className="w-full min-w-28 border border-slate-200 px-3 py-3 disabled:bg-slate-100" placeholder={row.adHocSite ? '入力不可' : '408 / CS002'} value={assetIdentifier(row.installAssetId)} onChange={(event) => updateRow(row.id, { installAssetId: normalizeAssetIdentifier(event.target.value) })} />}</td>
                 <td className="border border-slate-300 p-2">{isQuantityEntry(row)
                   ? <input type="number" min="0" step="1" inputMode="numeric" className="w-full min-w-24 border border-slate-200 px-3 py-3" placeholder="台数" value={row.basketCollectCount} onChange={(event) => updateRow(row.id, { basketCollectCount: event.target.value })} />
-                  : <input disabled={row.adHocSite} autoCapitalize="characters" className="w-full min-w-28 border border-slate-200 px-3 py-3 disabled:bg-slate-100" placeholder={row.adHocSite ? '入力不可' : '210 / M003'} value={assetIdentifier(row.collectAssetId)} onChange={(event) => updateRow(row.id, { collectAssetId: normalizeAssetIdentifier(event.target.value) })} />}</td>
+                  : <input list="active-container-number-options" disabled={row.adHocSite} autoCapitalize="characters" className="w-full min-w-28 border border-slate-200 px-3 py-3 disabled:bg-slate-100" placeholder={row.adHocSite ? '入力不可' : '210 / M003'} value={assetIdentifier(row.collectAssetId)} onChange={(event) => updateRow(row.id, { collectAssetId: normalizeAssetIdentifier(event.target.value) })} />}</td>
                 <td className="border border-slate-300 p-2"><textarea className="min-h-12 w-full min-w-52 whitespace-pre-wrap border border-slate-200 px-3 py-3" placeholder="例：金属くず 310kg（自動車部品）" value={row.quantityNote} onChange={(event) => updateRow(row.id, { quantityNote: event.target.value })} /><p className="mt-1 text-xs text-slate-500">文字数制限なし・改行も帳票へ反映</p></td>
                 <td className="border border-slate-300 px-2 py-4 text-center"><span className={`inline-flex px-3 py-1 text-xs font-black ${typeColor(type)}`}>{type}</span></td>
                 <td className="border border-slate-300 p-2"><button type="button" className="p-3 text-slate-400 hover:text-rose-700" onClick={() => setRows((current) => current.length === 1 ? [emptyRow()] : current.filter((item) => item.id !== row.id))} aria-label="行を削除"><Trash2 className="h-5 w-5" /></button></td>
@@ -1690,6 +1823,30 @@ export function ContainerManagement() {
         <div className="panel rounded-none p-5">
           <div className="flex items-start gap-3"><Database className="h-8 w-8 text-emerald-800" /><div><h2 className="text-xl font-black">排出事業者・現場登録</h2><p className="mt-2 text-sm leading-6 text-slate-600">顧客番号と現場番号で紐づけます。名称またはカナの一部を入力すると、日報入力時に候補を検索できます。</p></div></div>
         </div>
+        <section className="panel rounded-none p-5">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div><h3 className="text-lg font-black">コンテナ番号管理（4㎥・8㎥）</h3><p className="mt-2 text-sm leading-6 text-slate-600">番号付きコンテナの追加・番号修正・使用停止を行います。初期登録済みの番号も対象です。廃棄した番号は履歴を残したまま使用停止にします。</p></div>
+            <p className="bg-emerald-50 px-3 py-2 text-sm font-bold text-emerald-900">使用中 {activeNumberedContainers.length}件／全 {numberedContainers.length}件</p>
+          </div>
+          <form className="mt-5 grid gap-4 md:grid-cols-[1fr_180px_auto] md:items-end" onSubmit={addNumberedContainer}>
+            <label className="text-sm font-bold">コンテナ番号<input required autoCapitalize="characters" className="mt-2 w-full border border-slate-300 px-4 py-3" placeholder="例：501／M015" value={containerNumber} onChange={(event) => setContainerNumber(normalizeAssetIdentifier(event.target.value))} /></label>
+            <label className="text-sm font-bold">種類<select className="mt-2 w-full border border-slate-300 bg-white px-4 py-3" value={containerSize} onChange={(event) => setContainerSize(event.target.value as '4㎥' | '8㎥')}><option value="4㎥">4㎥</option><option value="8㎥">8㎥</option></select></label>
+            <button type="submit" disabled={loading} className="bg-emerald-800 px-6 py-3 font-black text-white disabled:opacity-50"><span className="inline-flex items-center gap-2"><Plus className="h-5 w-5" />番号を追加</span></button>
+          </form>
+          <div className="mt-6 flex flex-wrap items-end justify-between gap-4 border-t border-slate-200 pt-5">
+            <label className="text-sm font-bold">番号を検索<span className="mt-2 flex min-w-72 border border-slate-300 bg-white px-3"><Search className="my-auto h-5 w-5 text-slate-500" /><input className="w-full px-3 py-3 outline-none" placeholder="番号・種類" value={containerMasterQuery} onChange={(event) => setContainerMasterQuery(event.target.value)} /></span></label>
+            <label className="flex items-center gap-2 text-sm font-bold"><input type="checkbox" checked={showInactiveContainers} onChange={(event) => setShowInactiveContainers(event.target.checked)} />使用停止中も表示</label>
+          </div>
+          <div className="mt-4 max-h-[420px] overflow-auto">
+            <table className="w-full min-w-[620px] text-sm"><thead className="sticky top-0 bg-slate-100"><tr>{['コンテナ番号', '種類', '状態', '操作'].map((title) => <th key={title} className="border border-slate-200 px-3 py-3 text-left">{title}</th>)}</tr></thead><tbody>{filteredNumberedContainers.map((item) => <tr key={item.id} className={item.isActive ? 'bg-white' : 'bg-slate-50 text-slate-500'}><td className="border border-slate-200 px-3 py-3 text-lg font-black">{item.label}</td><td className="border border-slate-200 px-3 py-3">{item.sizeLabel || <span className="font-bold text-amber-700">未設定</span>}</td><td className="border border-slate-200 px-3 py-3"><span className={`px-2 py-1 text-xs font-black ${item.isActive ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-700'}`}>{item.isActive ? '使用中' : '使用停止'}</span></td><td className="border border-slate-200 px-3 py-3"><span className="flex gap-3"><button type="button" className="inline-flex items-center gap-1 font-black text-amber-800" onClick={() => startNumberedContainerEdit(item)}><PencilLine className="h-4 w-4" />修正</button><button type="button" className={`font-black ${item.isActive ? 'text-rose-700' : 'text-emerald-800'}`} onClick={() => void toggleNumberedContainerActive(item)}>{item.isActive ? '使用停止' : '再使用'}</button></span></td></tr>)}</tbody></table>
+            {!filteredNumberedContainers.length ? <p className="bg-slate-50 px-4 py-6 text-center text-sm font-bold text-slate-600">該当するコンテナ番号はありません。</p> : null}
+          </div>
+        </section>
+        {numberedContainerEdit ? <form id="numbered-container-edit-form" className="panel scroll-mt-5 rounded-none border-l-8 border-amber-600 bg-amber-50 p-5" onSubmit={saveNumberedContainerEdit}>
+          <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-lg font-black text-amber-950">コンテナ番号を修正</h3><p className="mt-2 text-sm text-amber-900">番号を変更すると、初期登録を含む既存の設置情報・収集履歴・管理表にも連動して反映します。</p></div><button type="button" className="inline-flex items-center gap-2 border border-amber-700 bg-white px-4 py-2 text-sm font-bold text-amber-900" onClick={() => setNumberedContainerEdit(null)}><X className="h-4 w-4" />閉じる</button></div>
+          <div className="mt-4 grid gap-4 md:grid-cols-[1fr_180px]"><label className="text-sm font-bold">コンテナ番号<input required autoCapitalize="characters" className="mt-2 w-full border border-amber-400 bg-white px-4 py-3" value={numberedContainerEdit.label} onChange={(event) => setNumberedContainerEdit({ ...numberedContainerEdit, label: normalizeAssetIdentifier(event.target.value) })} /></label><label className="text-sm font-bold">種類<select required className="mt-2 w-full border border-amber-400 bg-white px-4 py-3" value={numberedContainerEdit.sizeLabel} onChange={(event) => setNumberedContainerEdit({ ...numberedContainerEdit, sizeLabel: event.target.value as NumberedContainerMaster['sizeLabel'] })}><option value="" disabled>種類を選択</option><option value="4㎥">4㎥</option><option value="8㎥">8㎥</option></select></label></div>
+          <button type="submit" disabled={loading} className="mt-5 bg-amber-700 px-6 py-3 font-black text-white disabled:opacity-50">番号の修正を保存</button>
+        </form> : null}
         <div className="grid gap-6 lg:grid-cols-2">
           <form className="panel rounded-none p-5" onSubmit={addCustomer}>
             <h3 className="text-lg font-black">排出事業者を登録</h3>
